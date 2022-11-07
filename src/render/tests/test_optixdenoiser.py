@@ -35,7 +35,7 @@ def skip_if_wrong_driver_version(func):
 
     from functools import wraps
 
-    REF_DRIVER_VERSION = '515.65.01'
+    REF_DRIVER_VERSION = '515.65.07'
 
     def run(command):
         p = subprocess.Popen(command,

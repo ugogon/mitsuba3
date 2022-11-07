@@ -9,6 +9,14 @@
 
 NAMESPACE_BEGIN(mitsuba)
 
+scoped_optix_context::scoped_optix_context() {
+    jit_cuda_push_context(jit_cuda_context());
+}
+
+scoped_optix_context::~scoped_optix_context() {
+    jit_cuda_pop_context();
+}
+
 void optix_initialize() {
     if (optixAccelBuild)
         return;
@@ -22,10 +30,8 @@ void optix_initialize() {
     L(optixAccelCompact);
     L(optixModuleCreateFromPTXWithTasks);
     L(optixModuleGetCompilationState);
-    L(optixModuleDestroy)
     L(optixTaskExecute);
     L(optixProgramGroupCreate);
-    L(optixProgramGroupDestroy)
     L(optixSbtRecordPackHeader);
     L(optixDenoiserCreate);
     L(optixDenoiserDestroy);

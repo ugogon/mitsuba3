@@ -72,6 +72,7 @@ size_t init_optix_config(bool has_meshes, bool has_others, bool has_instances) {
         Log(Debug, "Initialize Optix configuration (index=%zu)..", config_index);
 
         config.context = jit_optix_context();
+        scoped_optix_context guard;
 
         // =====================================================
         // Configure options for OptiX pipeline

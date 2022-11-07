@@ -28,6 +28,7 @@ MI_VARIANT OptixDenoiser<Float, Spectrum>::OptixDenoiser(
               "also providing albedo information!");
 
     optix_initialize();
+    scoped_optix_context guard;
 
     OptixDeviceContext context = jit_optix_context();
     OptixDenoiserModelKind model_kind = temporal
@@ -52,8 +53,10 @@ MI_VARIANT OptixDenoiser<Float, Spectrum>::OptixDenoiser(
 }
 
 MI_VARIANT OptixDenoiser<Float, Spectrum>::~OptixDenoiser() {
-    if (m_denoiser != nullptr)
+    if (m_denoiser != nullptr) {
+        scoped_optix_context guard;
         jit_optix_check(optixDenoiserDestroy(m_denoiser));
+    }
     jit_free(m_hdr_intensity);
     jit_free(m_state);
     jit_free(m_scratch);
@@ -68,6 +71,8 @@ OptixDenoiser<Float, Spectrum>::operator()(
     using TensorArray = typename TensorXf::Array;
 
     validate_input(noisy, albedo, normals, flow, previous_denoised);
+
+    scoped_optix_context guard;
 
     OptixDenoiserLayer layers = {};
     OptixPixelFormat input_pixel_format = (noisy.shape(2) == 3)
@@ -143,6 +148,7 @@ OptixDenoiser<Float, Spectrum>::operator()(
                                         0, 0, m_scratch, m_scratch_size));
 
     size_t shape[3] = { noisy.shape(0), noisy.shape(1), noisy.shape(2) };
+
     return TensorXf(std::move(output_data), 3, shape);
 }
 
