@@ -123,11 +123,11 @@ void build_gas(const OptixDeviceContext &context,
         ));
 
         void* d_temp_buffer = jit_malloc(AllocType::Device, buffer_sizes.tempSizeInBytes);
-        void* output_buffer = jit_malloc(AllocType::Device, buffer_sizes.outputSizeInBytes + 8);
+        void* output_buffer = jit_malloc(AllocType::Device, buffer_sizes.outputSizeInBytes);
 
         OptixAccelEmitDesc emit_property = {};
         emit_property.type   = OPTIX_PROPERTY_TYPE_COMPACTED_SIZE;
-        emit_property.result = (CUdeviceptr)((char*)output_buffer + buffer_sizes.outputSizeInBytes);
+        emit_property.result = (CUdeviceptr) jit_malloc(AllocType::Device, sizeof(uint64_t));
 
         OptixTraversableHandle accel;
         jit_optix_check(optixAccelBuild(
@@ -138,7 +138,7 @@ void build_gas(const OptixDeviceContext &context,
             (unsigned int) shapes_count, // num build inputs
             (CUdeviceptr)d_temp_buffer,
             buffer_sizes.tempSizeInBytes,
-            (CUdeviceptr)output_buffer,
+            (CUdeviceptr) output_buffer,
             buffer_sizes.outputSizeInBytes,
             &accel,
             &emit_property,  // emitted property list
@@ -166,6 +166,8 @@ void build_gas(const OptixDeviceContext &context,
             jit_free(output_buffer);
             output_buffer = compact_buffer;
         }
+
+        jit_free(emit_property.result);
 
         handle.handle = accel;
         handle.buffer = output_buffer;

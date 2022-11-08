@@ -85,7 +85,7 @@ size_t init_optix_config(bool has_meshes, bool has_others, bool has_instances) {
         module_compile_options.debugLevel       = OPTIX_COMPILE_DEBUG_LEVEL_NONE;
     #else
         module_compile_options.optLevel         = OPTIX_COMPILE_OPTIMIZATION_LEVEL_0;
-        module_compile_options.debugLevel       = OPTIX_COMPILE_DEBUG_LEVEL_MINIMAL;
+        module_compile_options.debugLevel       = OPTIX_COMPILE_DEBUG_LEVEL_FULL;
     #endif
 
         config.pipeline_compile_options.usesMotionBlur     = false;
@@ -327,6 +327,8 @@ MI_VARIANT void Scene<Float, Spectrum>::accel_parameters_changed_gpu() {
             } else {
                 // Build a "master" IAS that contains all the IAS of the scene (meshes,
                 // custom shapes, instances, ...)
+                scoped_optix_context guard;
+
                 OptixAccelBuildOptions accel_options = {};
                 accel_options.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
                 accel_options.operation  = OPTIX_BUILD_OPERATION_BUILD;
