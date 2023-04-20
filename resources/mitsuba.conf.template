@@ -284,6 +284,11 @@
 
     # CUDA variant definitions
 
+    "cuda_acoustic": {
+        "float": "dr::CUDAArray<float>",
+        "spectrum": "Color<Float, 3>"
+    },
+
     "cuda_mono": {
         "float": "dr::CUDAArray<float>",
         "spectrum": "Color<Float, 1>"
