@@ -564,9 +564,45 @@ protected:
     int m_rr_depth;
 };
 
+/** \brief Abstract integrator which tracks time. **/
+template <typename Float, typename Spectrum>
+class MI_EXPORT_LIB TimeDependentIntegrator : public Integrator<Float, Spectrum> {
+public:
+    MI_IMPORT_BASE(Integrator, m_stop, m_render_timer)
+    MI_IMPORT_TYPES(Scene, Sensor, Film, Sampler)
+
+    TensorXf render(Scene *scene,
+                    Sensor *sensor,
+                    uint32_t seed = 0,
+                    uint32_t spp = 0,
+                    bool develop = true,
+                    bool evaluate = true) override;
+
+    MI_DECLARE_CLASS()
+protected:
+    TimeDependentIntegrator(const Properties & props);
+    virtual ~TimeDependentIntegrator();
+
+protected:
+    // float m_max_time;
+    // size_t m_wav_bin_count;
+    // size_t m_time_step_count;
+
+    /**
+     * \brief Number of samples to compute for each pass over the image blocks.
+     *
+     * Must be a multiple of the total sample count per pixel.
+     * If set to (uint32_t) -1, all the work is done in a single pass (default).
+     */
+    uint32_t m_samples_per_pass;
+
+    uint32_t m_max_depth;
+    uint32_t m_rr_depth;
+};
 
 MI_EXTERN_CLASS(Integrator)
 MI_EXTERN_CLASS(SamplingIntegrator)
 MI_EXTERN_CLASS(MonteCarloIntegrator)
 MI_EXTERN_CLASS(AdjointIntegrator)
+MI_EXTERN_CLASS(TimeDependentIntegrator)
 NAMESPACE_END(mitsuba)
