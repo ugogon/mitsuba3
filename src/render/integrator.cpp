@@ -762,14 +762,130 @@ AdjointIntegrator<Float, Spectrum>::render(Scene *scene,
 
 // -----------------------------------------------------------------------------
 
+MI_VARIANT TimeDependentIntegrator<Float, Spectrum>::TimeDependentIntegrator(const Properties &props)
+    : Base(props) { }
+
+MI_VARIANT TimeDependentIntegrator<Float, Spectrum>::~TimeDependentIntegrator() { }
+
+MI_VARIANT typename TimeDependentIntegrator<Float, Spectrum>::TensorXf
+TimeDependentIntegrator<Float, Spectrum>::render(Scene *scene,
+                                                 Sensor *sensor,
+                                                 uint32_t seed,
+                                                 uint32_t spp,
+                                                 bool develop,
+                                                 bool evaluate) {
+    ScopedPhase sp(ProfilerPhase::Render);
+    m_stop = false;
+
+    Film *film = sensor->film();
+    ScalarVector2u film_size = film->crop_size();
+    // m_time_step_count = film_size.x(); // TODO
+
+    // Potentially adjust the number of samples per pixel if spp != 0
+    Sampler *sampler = sensor->sampler();
+    if (spp)
+        sampler->set_sample_count(spp);
+    spp = sampler->sample_count();
+
+    uint32_t spp_per_pass = (m_samples_per_pass == (uint32_t) -1)
+                                    ? spp
+                                    : std::min(m_samples_per_pass, spp);
+
+    if ((spp % spp_per_pass) != 0)
+        Throw("sample_count (%d) must be a multiple of spp_per_pass (%d).",
+              spp, spp_per_pass);
+
+    uint32_t n_passes = spp / spp_per_pass;
+
+    // Determine output channels and prepare the film with this information
+    // size_t n_channels = film->prepare(aov_names()); // TODO
+
+    m_render_timer.reset();
+
+    // TensorXf result; // TODO
+    if constexpr (!dr::is_jit_v<Float>) {
+        // TODO
+        NotImplementedError("TimeDependentIntergrator::render Scalar case");
+     } else {
+        size_t wavefront_size = (size_t) film_size.x() *
+                                (size_t) film_size.y() * (size_t) spp_per_pass,
+               wavefront_size_limit = 0xffffffffu;
+
+        if (wavefront_size > wavefront_size_limit) {
+            spp_per_pass /=
+                (uint32_t)((wavefront_size + wavefront_size_limit - 1) /
+                           wavefront_size_limit);
+            n_passes       = spp / spp_per_pass;
+            wavefront_size = (size_t) film_size.x() * (size_t) film_size.y() *
+                             (size_t) spp_per_pass;
+
+            Log(Warn,
+                "The requested rendering task involves %zu Monte Carlo "
+                "samples, which exceeds the upper limit of 2^32 = 4294967296 "
+                "for this variant. Mitsuba will instead split the rendering "
+                "task into %zu smaller passes to avoid exceeding the limits.",
+                wavefront_size, n_passes);
+        }
+
+        dr::sync_thread(); // Separate from scene initialization (for timings)
+
+        Log(Info, "Starting render job (%ux%u, %u sample%s%s)",
+            film_size.x(), film_size.y(), spp, spp == 1 ? "" : "s",
+            n_passes > 1 ? tfm::format(", %u passes", n_passes) : "");
+
+        // TODO: needed
+        if (n_passes > 1 && !evaluate) {
+            Log(Warn, "render(): forcing 'evaluate=true' since multi-pass "
+                      "rendering was requested.");
+            evaluate = true;
+        }
+
+        sampler->set_samples_per_wavefront((uint32_t) spp_per_pass);
+        sampler->seed(seed, (uint32_t) wavefront_size);
+
+        // TODO: was geben idx und band_id an?
+        UInt32 idx = dr::arange<UInt32>((uint32_t) wavefront_size);
+        if (spp_per_pass > 1)
+            idx /= (uint32_t) spp_per_pass;
+
+        UInt32 band_id = dr::zeros<UInt32>((uint32_t) wavefront_size);
+        if (film_size.y() > 1)
+            band_id = idx % film_size.y();
+
+        /*
+        ref<Histogram> hist = new Histogram(film_size, 1, film->reconstruction_filter());
+        hist->clear();
+
+        for (size_t i = 0; i < n_passes; i++) {
+            render_sample(scene, sensor, sampler, hist, band_id);
+            progress->update( (i + 1) / (ScalarFloat) n_passes);
+        }
+
+        std::cout << "total_sample_count: " << total_sample_count << std::endl;
+
+        film->put(hist);
+        */
+     }
+
+    if (!m_stop && (evaluate || !dr::is_jit_v<Float>))
+        Log(Info, "Rendering finished. (took %s)",
+            util::time_string((float) m_render_timer.value(), true));
+
+    return { }; // TODO: Rückgabewert in mi3 unterscheidet sich zu mi2
+}
+
+// -----------------------------------------------------------------------------
+
 MI_IMPLEMENT_CLASS_VARIANT(Integrator, Object, "integrator")
 MI_IMPLEMENT_CLASS_VARIANT(SamplingIntegrator, Integrator)
 MI_IMPLEMENT_CLASS_VARIANT(MonteCarloIntegrator, SamplingIntegrator)
 MI_IMPLEMENT_CLASS_VARIANT(AdjointIntegrator, Integrator)
+MI_IMPLEMENT_CLASS_VARIANT(TimeDependentIntegrator, Integrator)
 
 MI_INSTANTIATE_CLASS(Integrator)
 MI_INSTANTIATE_CLASS(SamplingIntegrator)
 MI_INSTANTIATE_CLASS(MonteCarloIntegrator)
 MI_INSTANTIATE_CLASS(AdjointIntegrator)
+MI_INSTANTIATE_CLASS(TimeDependentIntegrator)
 
 NAMESPACE_END(mitsuba)
