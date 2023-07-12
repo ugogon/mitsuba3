@@ -9,6 +9,7 @@
 #include <mitsuba/core/vector.h>
 #include <mitsuba/render/fwd.h>
 #include <mitsuba/render/imageblock.h>
+#include <mitsuba/render/histogram.h>
 #include <mitsuba/render/interaction.h>
 #include <mitsuba/render/records.h>
 #include <mitsuba/render/scene.h>
@@ -569,7 +570,7 @@ template <typename Float, typename Spectrum>
 class MI_EXPORT_LIB TimeDependentIntegrator : public Integrator<Float, Spectrum> {
 public:
     MI_IMPORT_BASE(Integrator, m_stop, m_render_timer)
-    MI_IMPORT_TYPES(Scene, Sensor, Film, Sampler)
+    MI_IMPORT_TYPES(Scene, Sensor, Film, Histogram, Sampler)
 
     TensorXf render(Scene *scene,
                     Sensor *sensor,
