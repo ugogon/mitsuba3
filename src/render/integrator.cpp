@@ -822,7 +822,7 @@ TimeDependentIntegrator<Float, Spectrum>::render(Scene *scene,
             film_size.x(), film_size.y(), spp, spp == 1 ? "" : "s",
             n_passes > 1 ? tfm::format(", %u passes", n_passes) : "");
 
-        // TODO: needed
+        // TODO: needed?
         if (n_passes > 1 && !evaluate) {
             Log(Warn, "render(): forcing 'evaluate=true' since multi-pass "
                       "rendering was requested.");
@@ -841,10 +841,10 @@ TimeDependentIntegrator<Float, Spectrum>::render(Scene *scene,
         if (film_size.y() > 1)
             band_id = idx % film_size.y();
 
-        /*
-        ref<Histogram> hist = new Histogram(film_size, 1, film->reconstruction_filter());
+        ref<Histogram> hist = new Histogram(film_size, 1, film->rfilter());
         hist->clear();
 
+        /*
         for (size_t i = 0; i < n_passes; i++) {
             render_sample(scene, sensor, sampler, hist, band_id);
             progress->update( (i + 1) / (ScalarFloat) n_passes);
