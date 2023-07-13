@@ -49,7 +49,7 @@ MI_DECLARE_ENUM_OPERATORS(FilmFlags)
 template <typename Float, typename Spectrum>
 class MI_EXPORT_LIB Film : public Object {
 public:
-    MI_IMPORT_TYPES(ImageBlock, ReconstructionFilter, Texture)
+    MI_IMPORT_TYPES(ImageBlock, Histogram, ReconstructionFilter, Texture)
 
     /**
      * Configure the film for rendering a specified set of extra channels (AOVS).
@@ -62,6 +62,9 @@ public:
 
     /// Merge an image block into the film. This methods should be thread-safe.
     virtual void put_block(const ImageBlock *block) = 0;
+
+    /// Merge an image block into the film. This methods should be thread-safe.
+    virtual void put_block(const Histogram *block) = 0;
 
     /// Clear the film contents to zero.
     virtual void clear() = 0;

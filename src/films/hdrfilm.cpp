@@ -136,7 +136,7 @@ class HDRFilm final : public Film<Float, Spectrum> {
 public:
     MI_IMPORT_BASE(Film, m_size, m_crop_size, m_crop_offset, m_sample_border,
                    m_filter, m_flags)
-    MI_IMPORT_TYPES(ImageBlock)
+    MI_IMPORT_TYPES(ImageBlock, Histogram)
 
     HDRFilm(const Properties &props) : Base(props) {
         std::string file_format = string::to_lower(
@@ -294,6 +294,12 @@ public:
         Assert(m_storage != nullptr);
         std::lock_guard<std::mutex> lock(m_mutex);
         m_storage->put_block(block);
+    }
+
+    // void put_block(const Histogram *block) override {
+    void put_block(const Histogram *block) override {
+       (void) block;
+       Throw("hdrfilm does not accept histograms");
     }
 
     void clear() override {

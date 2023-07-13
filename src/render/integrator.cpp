@@ -752,7 +752,9 @@ AdjointIntegrator<Float, Spectrum>::render(Scene *scene,
 // -----------------------------------------------------------------------------
 
 MI_VARIANT TimeDependentIntegrator<Float, Spectrum>::TimeDependentIntegrator(const Properties &props)
-    : Base(props) { }
+    : Base(props) {
+        // TODO
+}
 
 MI_VARIANT TimeDependentIntegrator<Float, Spectrum>::~TimeDependentIntegrator() { }
 
@@ -796,6 +798,8 @@ TimeDependentIntegrator<Float, Spectrum>::render(Scene *scene,
         // TODO
         NotImplementedError("TimeDependentIntergrator::render Scalar case");
      } else {
+        ref<ProgressReporter> progress = new ProgressReporter("Rendering");
+
         size_t wavefront_size = (size_t) film_size.x() *
                                 (size_t) film_size.y() * (size_t) spp_per_pass,
                wavefront_size_limit = 0xffffffffu;
@@ -844,16 +848,14 @@ TimeDependentIntegrator<Float, Spectrum>::render(Scene *scene,
         ref<Histogram> hist = new Histogram(film_size, 1, film->rfilter());
         hist->clear();
 
-        /*
         for (size_t i = 0; i < n_passes; i++) {
             render_sample(scene, sensor, sampler, hist, band_id);
             progress->update( (i + 1) / (ScalarFloat) n_passes);
         }
 
-        std::cout << "total_sample_count: " << total_sample_count << std::endl;
+        std::cout << "wavefront_size: " << wavefront_size << std::endl;
 
-        film->put(hist);
-        */
+        film->put_block(hist);
      }
 
     if (!m_stop && (evaluate || !dr::is_jit_v<Float>))
@@ -861,6 +863,16 @@ TimeDependentIntegrator<Float, Spectrum>::render(Scene *scene,
             util::time_string((float) m_render_timer.value(), true));
 
     return { }; // TODO: Rückgabewert in mi3 unterscheidet sich zu mi2
+}
+
+MI_VARIANT void
+TimeDependentIntegrator<Float, Spectrum>::render_sample(const Scene *scene,
+                                                        const Sensor *sensor,
+                                                        Sampler *sampler,
+                                                        Histogram *hist,
+                                                        const UInt32 band_id,
+                                                        Mask active) const {
+
 }
 
 // -----------------------------------------------------------------------------
