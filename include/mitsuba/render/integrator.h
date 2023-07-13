@@ -584,6 +584,13 @@ protected:
     TimeDependentIntegrator(const Properties & props);
     virtual ~TimeDependentIntegrator();
 
+    void render_sample(const Scene *scene,
+                       const Sensor *sensor,
+                       Sampler *sampler,
+                       Histogram *hist,
+                       const UInt32 band_id,
+                       Mask active = true) const;
+
 protected:
     // float m_max_time;
     // size_t m_wav_bin_count;

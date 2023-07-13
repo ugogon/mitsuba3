@@ -2,6 +2,7 @@
 #include <mitsuba/core/filesystem.h>
 #include <mitsuba/render/film.h>
 #include <mitsuba/render/imageblock.h>
+#include <mitsuba/render/histogram.h>
 #include <mitsuba/core/rfilter.h>
 #include <mitsuba/render/scene.h>
 #include <mitsuba/render/spiral.h>
@@ -10,7 +11,7 @@
 /// Trampoline for derived types implemented in Python
 MI_VARIANT class PyFilm : public Film<Float, Spectrum> {
 public:
-    MI_IMPORT_TYPES(Film, ImageBlock)
+    MI_IMPORT_TYPES(Film, ImageBlock, Histogram)
 
     PyFilm(const Properties &props) : Film(props) { }
 
@@ -24,6 +25,11 @@ public:
 
     void put_block(const ImageBlock *block) override {
         PYBIND11_OVERRIDE_PURE(void, Film, put_block, block);
+    }
+
+    void put_block(const Histogram *block) override {
+        PYBIND11_OVERRIDE_PURE(void, Film, py::overload_cast<const ImageBlock *>(&Film::put_block), block);
+        PYBIND11_OVERRIDE_PURE(void, Film, py::overload_cast<const ImageBlock *>(&Film::put_block), block);
     }
 
     void clear() override {
@@ -83,7 +89,8 @@ MI_PY_EXPORT(Film) {
     MI_PY_TRAMPOLINE_CLASS(PyFilm, Film, Object)
         .def(py::init<const Properties &>(), "props"_a)
         .def_method(Film, prepare, "aovs"_a)
-        .def_method(Film, put_block, "block"_a)
+        .def("put_block", py::overload_cast<const ImageBlock *>(&Film::put_block), "block"_a)
+        .def("put_block", py::overload_cast<const Histogram *>(&Film::put_block), "block"_a)
         .def_method(Film, clear)
         .def_method(Film, develop, "raw"_a = false)
         .def_method(Film, bitmap, "raw"_a = false)
