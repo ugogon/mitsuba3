@@ -837,20 +837,22 @@ TimeDependentIntegrator<Float, Spectrum>::render(Scene *scene,
             film_size.x(), film_size.y(), spp, spp == 1 ? "" : "s",
             n_passes > 1 ? tfm::format(", %u passes", n_passes) : "");
 
-        // TODO: needed?
         if (n_passes > 1 && !evaluate) {
             Log(Warn, "render(): forcing 'evaluate=true' since multi-pass "
                       "rendering was requested.");
             evaluate = true;
         }
 
-        sampler->set_samples_per_wavefront((uint32_t) spp_per_pass);
+        // Inform the sampler about the passes (needed in vectorized modes)
+        sampler->set_samples_per_wavefront(spp_per_pass);
+
+        // Seed the underlying random number generators, if applicable
         sampler->seed(seed, (uint32_t) wavefront_size);
 
         // TODO: was geben idx und band_id an?
         UInt32 idx = dr::arange<UInt32>((uint32_t) wavefront_size);
         if (spp_per_pass > 1)
-            idx /= (uint32_t) spp_per_pass;
+            idx /= dr::opaque<UInt32>(spp_per_pass);
 
         UInt32 band_id = dr::zeros<UInt32>((uint32_t) wavefront_size);
         if (film_size.y() > 1)
@@ -862,11 +864,15 @@ TimeDependentIntegrator<Float, Spectrum>::render(Scene *scene,
         for (size_t i = 0; i < n_passes; i++) {
             render_sample(scene, sensor, sampler, hist, band_id);
             progress->update( (i + 1) / (ScalarFloat) n_passes);
+
+            // TODO: sampler->advance() required?
         }
 
         std::cout << "wavefront_size: " << wavefront_size << std::endl;
 
         film->put_block(hist);
+
+        // TODO: develop and evaluate stuff?
      }
 
     if (!m_stop && (evaluate || !dr::is_jit_v<Float>))
@@ -876,6 +882,16 @@ TimeDependentIntegrator<Float, Spectrum>::render(Scene *scene,
     return { }; // TODO: Rückgabewert in mi3 unterscheidet sich zu mi2
 }
 
+MI_VARIANT std::pair<Spectrum, typename TimeDependentIntegrator<Float, Spectrum>::Mask>
+TimeDependentIntegrator<Float, Spectrum>::trace_acoustic_ray(const Scene *scene,
+                                                             Sampler *sampler,
+                                                             const Ray3f &ray,
+                                                             Histogram *hist,
+                                                             const UInt32 band_id,
+                                                             Mask active) const {
+    NotImplementedError("trace_acoustic_ray");
+}
+
 MI_VARIANT void
 TimeDependentIntegrator<Float, Spectrum>::render_sample(const Scene *scene,
                                                         const Sensor *sensor,
@@ -883,7 +899,11 @@ TimeDependentIntegrator<Float, Spectrum>::render_sample(const Scene *scene,
                                                         Histogram *hist,
                                                         const UInt32 band_id,
                                                         Mask active) const {
-
+    Point2f direction_sample = sampler->next_2d(active);
+    Float wavelength_sample = dr::gather<Float>(m_wavelength_bins.array(), band_id, active);
+    auto [ray, ray_weight] = sensor->sample_ray(0, wavelength_sample, { 0., 0. }, direction_sample);
+    trace_acoustic_ray(scene, sampler, ray, hist, band_id, active);
+    sampler->advance();
 }
 
 // -----------------------------------------------------------------------------

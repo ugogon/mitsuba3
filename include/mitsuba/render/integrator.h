@@ -579,6 +579,19 @@ public:
                     bool develop = true,
                     bool evaluate = true) override;
 
+    /*
+     * Trace an acoustic ray over time and store intermediate results in the histogram
+     */
+    virtual std::pair<Spectrum, Mask> trace_acoustic_ray(const Scene *scene,
+                                                         Sampler *sampler,
+                                                         const Ray3f &ray,
+                                                         Histogram *hist,
+                                                         const UInt32 band_id,
+                                                         Mask active = true) const;
+
+    /// Get the bins for each which we integrate
+    TensorXf wavelength_bins() const { return m_wavelength_bins; }
+
     MI_DECLARE_CLASS()
 protected:
     TimeDependentIntegrator(const Properties & props);
@@ -595,6 +608,7 @@ protected:
     // float m_max_time;
     // size_t m_wav_bin_count;
     // size_t m_time_step_count;
+    TensorXf m_wavelength_bins;
 
     /**
      * \brief Number of samples to compute for each pass over the image blocks.
