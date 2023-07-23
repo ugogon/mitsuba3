@@ -621,7 +621,7 @@ protected:
     /// Flag for disabling direct visibility of emitters
     // bool m_hide_emitters;
 
-    // uint32_t m_max_depth;
+    uint32_t m_max_depth;
     // uint32_t m_rr_depth;
 };
 
