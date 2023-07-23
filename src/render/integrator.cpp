@@ -780,9 +780,7 @@ MI_VARIANT TimeDependentIntegrator<Float, Spectrum>::TimeDependentIntegrator(con
     // if (m_rr_depth <= 0)
     //     Throw("\"rr_depth\" must be set to a value greater than zero!");
 
-    // m_max_depth = props.get<int>("max_depth", -1);
-    // if (m_max_depth < 0 && m_max_depth != -1)
-    //     Throw("\"max_depth\" must be set to -1 (infinite) or a value >= 0");
+    m_max_depth = props.get<uint32_t>("max_depth", -1);
 
     // m_max_time = props.get<float>("max_time", 1.0f);
     // if (m_max_time <= 0)
