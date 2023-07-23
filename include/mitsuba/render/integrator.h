@@ -606,8 +606,8 @@ protected:
 
 protected:
     // float m_max_time;
-    // size_t m_wav_bin_count;
     // size_t m_time_step_count;
+    // size_t m_wav_bin_count;
     TensorXf m_wavelength_bins;
 
     /**
@@ -618,8 +618,11 @@ protected:
      */
     uint32_t m_samples_per_pass;
 
-    uint32_t m_max_depth;
-    uint32_t m_rr_depth;
+    /// Flag for disabling direct visibility of emitters
+    // bool m_hide_emitters;
+
+    // uint32_t m_max_depth;
+    // uint32_t m_rr_depth;
 };
 
 MI_EXTERN_CLASS(Integrator)

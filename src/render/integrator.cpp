@@ -764,7 +764,49 @@ AdjointIntegrator<Float, Spectrum>::render(Scene *scene,
 
 MI_VARIANT TimeDependentIntegrator<Float, Spectrum>::TimeDependentIntegrator(const Properties &props)
     : Base(props) {
-        // TODO
+    m_samples_per_pass = props.get<uint32_t>("samples_per_pass", (uint32_t) -1);
+    if (m_samples_per_pass != (uint32_t) -1) {
+        Log(Warn, "The 'samples_per_pass' is deprecated, as a poor choice of "
+                  "this parameter can have a detrimental effect on performance. "
+                  "Please leave it undefined; Mitsuba will then automatically "
+                  "choose the necessary number of passes.");
+    }
+
+    // TODO
+    // m_time_step_count = 0;
+    // m_hide_emitters = props.get<bool>("hide_emitters", false);
+
+    // m_rr_depth = props.get<int>("rr_depth", 5);
+    // if (m_rr_depth <= 0)
+    //     Throw("\"rr_depth\" must be set to a value greater than zero!");
+
+    // m_max_depth = props.get<int>("max_depth", -1);
+    // if (m_max_depth < 0 && m_max_depth != -1)
+    //     Throw("\"max_depth\" must be set to -1 (infinite) or a value >= 0");
+
+    // m_max_time = props.get<float>("max_time", 1.0f);
+    // if (m_max_time <= 0)
+        // Throw("\"max_time\" must be set to a value greater than zero!");
+
+    std::vector<std::string> wavelengths_str =
+        string::tokenize(props.get<std::string>("wavelength_bins"), " ,");
+
+    // m_wav_bin_count = wavelengths_str.size();
+    size_t wav_bin_count = wavelengths_str.size();
+
+    // Allocate space
+    m_wavelength_bins = dr::zeros<TensorXf>(wav_bin_count);
+
+    // Copy and convert to wavelengths
+    for (size_t i = 0; i < wav_bin_count; ++i) {
+        try {
+            Float wav = std::stod(wavelengths_str[i]);
+            dr::scatter(m_wavelength_bins.array(), wav, UInt32(i));
+        } catch (...) {
+            Throw("Could not parse floating point value '%s'",
+                  wavelengths_str[i]);
+        }
+    }
 }
 
 MI_VARIANT TimeDependentIntegrator<Float, Spectrum>::~TimeDependentIntegrator() { }
