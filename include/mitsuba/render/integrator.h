@@ -622,7 +622,7 @@ protected:
     // bool m_hide_emitters;
 
     uint32_t m_max_depth;
-    // uint32_t m_rr_depth;
+    uint32_t m_rr_depth;
 };
 
 MI_EXTERN_CLASS(Integrator)

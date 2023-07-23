@@ -753,6 +753,7 @@ AdjointIntegrator<Float, Spectrum>::render(Scene *scene,
 
 MI_VARIANT TimeDependentIntegrator<Float, Spectrum>::TimeDependentIntegrator(const Properties &props)
     : Base(props) {
+
     m_samples_per_pass = props.get<uint32_t>("samples_per_pass", (uint32_t) -1);
     if (m_samples_per_pass != (uint32_t) -1) {
         Log(Warn, "The 'samples_per_pass' is deprecated, as a poor choice of "
@@ -761,15 +762,25 @@ MI_VARIANT TimeDependentIntegrator<Float, Spectrum>::TimeDependentIntegrator(con
                   "choose the necessary number of passes.");
     }
 
+    /*  Longest visualized path depth (``-1 = infinite``). A value of \c 1 will
+        visualize only directly visible light sources. \c 2 will lead to
+        single-bounce (direct-only) illumination, and so on. */
+    int max_depth = props.get<int>("max_depth", -1);
+    if (max_depth < 0 && max_depth != -1)
+        Throw("\"max_depth\" must be set to -1 (infinite) or a value >= 0");
+
+    m_max_depth = (uint32_t) max_depth; // This maps -1 to 2^32-1 bounces
+
+    // Depth to begin using russian roulette
+    int rr_depth = props.get<int>("rr_depth", 5);
+    if (rr_depth <= 0)
+        Throw("\"rr_depth\" must be set to a value greater than zero!");
+
+    m_rr_depth = (uint32_t) rr_depth;
+
     // TODO
     // m_time_step_count = 0;
     // m_hide_emitters = props.get<bool>("hide_emitters", false);
-
-    // m_rr_depth = props.get<int>("rr_depth", 5);
-    // if (m_rr_depth <= 0)
-    //     Throw("\"rr_depth\" must be set to a value greater than zero!");
-
-    m_max_depth = props.get<uint32_t>("max_depth", -1);
 
     // m_max_time = props.get<float>("max_time", 1.0f);
     // if (m_max_time <= 0)
