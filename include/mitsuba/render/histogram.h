@@ -40,6 +40,27 @@ public:
               const ReconstructionFilter *filter = nullptr,
               bool border = true);
 
+    /**
+     * \brief Insert Wavelength samples at discrete position
+     *
+     * \param pos
+     *     time bin and wavelength bin
+     * \param value
+     *     Intensity value for this wavelength and time
+     * \param active
+     *     Mask indicating enabled state
+     * \returns
+     *     False if the sample was invalid. E.g not in range or NaN
+     */
+    void put(const Point2f &pos, const Spectrum &value, Mask active = true);
+
+    void put(const Point2f &pos, const Float *value, Mask active = true);
+
+    /**
+     * Merge two histograms (simply adding all the recorded data and weights)
+     */
+    void put(const Histogram * hist);
+
     /// Clear everything to zero.
     void clear();
 
