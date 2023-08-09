@@ -63,6 +63,23 @@ Histogram<Float, Spectrum>::set_size(const ScalarVector2u &size) {
     m_counts = dr::zeros<TensorXf>(total_size);
 }
 
+
+MI_VARIANT void
+Histogram<Float, Spectrum>::put(const Point2f &pos,
+                                const Spectrum &value,
+                                Mask active) {
+}
+
+MI_VARIANT void
+Histogram<Float, Spectrum>::put(const Point2f &pos,
+                                const Float *value,
+                                Mask active) {
+}
+
+MI_VARIANT void
+Histogram<Float, Spectrum>::put(const Histogram * hist) {
+}
+
 MI_IMPLEMENT_CLASS_VARIANT(Histogram, Object)
 MI_INSTANTIATE_CLASS(Histogram)
 NAMESPACE_END(mitsuba)
