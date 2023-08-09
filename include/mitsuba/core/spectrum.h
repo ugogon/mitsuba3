@@ -127,6 +127,10 @@ struct Spectrum<dr::detail::MaskedArray<Value_>, Size_>
 #define MI_CIE_MAX           830.f
 #define MI_CIE_SAMPLES       95
 
+#define MI_SOUND_SPEED       343
+#define MI_SOUND_MIN         0.017f
+#define MI_SOUND_MAX         17.f
+
 /* Scaling the CIE curves by the following constant ensures that
    a unit-valued spectrum integrates to a luminance of 1.0 */
 #define MI_CIE_Y_NORMALIZATION (1.0 / 106.7502593994140625)

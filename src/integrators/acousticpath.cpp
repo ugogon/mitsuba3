@@ -1,44 +1,34 @@
-// #include <random>
-// #include <map>
+#include <tuple>
 #include <mitsuba/core/ray.h>
 #include <mitsuba/core/progress.h>
 #include <mitsuba/core/properties.h>
-// #include <mitsuba/render/bsdf.h>
+#include <mitsuba/render/bsdf.h>
 // #include <mitsuba/render/emitter.h>
 #include <mitsuba/render/histogram.h>
 #include <mitsuba/render/integrator.h>
-// #include <mitsuba/render/records.h>
-// #include <enoki/stl.h>
+#include <mitsuba/render/records.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
 template <typename Float, typename Spectrum>
 class AcousticPathIntegrator : public MonteCarloIntegrator<Float, Spectrum> {
 public:
-    MI_IMPORT_BASE(MonteCarloIntegrator, m_samples_per_pass, m_max_depth, m_render_timer, m_stop)
-    MI_IMPORT_TYPES(Scene, Sensor, Film, Sampler, Histogram)
+    MI_IMPORT_BASE(MonteCarloIntegrator, m_samples_per_pass, m_max_depth, m_hide_emitters,
+                   m_render_timer, m_stop)
+    MI_IMPORT_TYPES(Scene, Sensor, Film, Sampler, Histogram, BSDFPtr)
 
     AcousticPathIntegrator(const Properties &props) : Base(props) {
-        // TODO
-
-        // m_time_step_count = 0;
-        // m_hide_emitters = props.get<bool>("hide_emitters", false);
-
-        // m_max_time = props.get<float>("max_time", 1.0f);
-        // if (m_max_time <= 0)
-            // Throw("\"max_time\" must be set to a value greater than zero!");
-
-        std::vector<std::string> wavelengths_str =
-            string::tokenize(props.get<std::string>("wavelength_bins"), " ,");
-
-        // m_wav_bin_count = wavelengths_str.size();
-        size_t wav_bin_count = wavelengths_str.size();
+        m_max_time = props.get<float>("max_time", 1.f);
+        if (m_max_time <= 0.f)
+            Throw("\"max_time\" must be set to a value greater than zero!");
 
         // Allocate space
-        m_wavelength_bins = dr::zeros<TensorXf>(wav_bin_count);
+        std::vector<std::string> wavelengths_str =
+            string::tokenize(props.get<std::string>("wavelength_bins"), " ,");
+        m_wavelength_bins = dr::zeros<TensorXf>(wavelengths_str.size());
 
         // Copy and convert to wavelengths
-        for (size_t i = 0; i < wav_bin_count; ++i) {
+        for (size_t i = 0; i < wavelengths_str.size(); ++i) {
             try {
                 Float wav = std::stod(wavelengths_str[i]);
                 dr::scatter(m_wavelength_bins.array(), wav, UInt32(i));
@@ -48,9 +38,9 @@ public:
             }
         }
 
-        // m_skip_direct = props.get<bool>("skip_direct", false);
-        // m_enable_hit_model = props.get<bool>("enable_hit_model", true);
-        // m_enable_emitter_sampling = props.get<bool>("enable_emitter_sampling", true);
+        m_skip_direct = props.get<bool>("skip_direct", false);
+        m_enable_hit_model = props.get<bool>("enable_hit_model", true);
+        m_enable_emitter_sampling = props.get<bool>("enable_emitter_sampling", true);
     }
 
     TensorXf render(Scene *scene,
@@ -64,7 +54,6 @@ public:
 
         Film *film = sensor->film();
         ScalarVector2u film_size = film->crop_size();
-        // m_time_step_count = film_size.x(); // TODO
 
         // Potentially adjust the number of samples per pixel if spp != 0
         Sampler *sampler = sensor->sampler();
@@ -165,43 +154,244 @@ public:
         return { }; // TODO: Rückgabewert in mi3 unterscheidet sich zu mi2
     }
 
-    std::pair<Spectrum, Mask> trace_acoustic_ray(const Scene *scene,
-                                                 Sampler *sampler,
-                                                 const Ray3f &ray_,
-                                                 Histogram *hist,
-                                                 const UInt32 band_id,
-                                                 Mask active) const {
-        // MI_MASKED_FUNCTION(ProfilerPhase::SamplingIntegratorSample, active);
+    std::pair<Spectrum, Mask> sample(const Scene *scene,
+                                     Sampler *sampler,
+                                     const Ray3f &ray_,
+                                     Histogram *hist,
+                                     const UInt32 band_id,
+                                     Bool active) const {
+        MI_MASKED_FUNCTION(ProfilerPhase::SamplingIntegratorSample, active);
 
-        // if (unlikely(m_max_depth == 0))
-        //     return { 0.f, false };
+        if (unlikely(m_max_depth == 0))
+            return { 0.f, false };
 
-        // // --------------------- Configure loop state ----------------------
+        // --------------------- Configure loop state ----------------------
 
-        // Ray3f ray = Ray3f(ray_);
+        Ray3f ray                      = Ray3f(ray_);
+        Spectrum throughput            = 1.f;
+        UInt32 depth                   = 0;
+        Float distance                 = 0.f;
+        const ScalarFloat max_distance = m_max_time * MI_SOUND_SPEED;
 
-        // Float distance = 0.f;
-        // // const ScalarFloat = max_distance = m_max_time * MI_SOUND_SPEED
+        // If m_hide_emitters == false, the environment emitter will be visible
+        Mask valid_ray                 = !m_hide_emitters && dr::neq(scene->environment(), nullptr);
+        Mask hit_emitter_before = false;
 
-        // return { 0.f, false };
+        // Variables caching information from the previous bounce
+        Interaction3f prev_si          = dr::zeros<Interaction3f>();
+        Float         prev_bsdf_pdf    = 1.f;
+        Bool          prev_bsdf_delta  = true;
+        BSDFContext   bsdf_ctx;
+
+        if (m_skip_direct)
+            prev_bsdf_pdf = 0.f;
+
+        /* Set up a Dr.Jit loop. This optimizes away to a normal loop in scalar
+           mode, and it generates either a a megakernel (default) or
+           wavefront-style renderer in JIT variants. This can be controlled by
+           passing the '-W' command line flag to the mitsuba binary or
+           enabling/disabling the JitFlag.LoopRecord bit in Dr.Jit.
+
+           The first argument identifies the loop by name, which is helpful for
+           debugging. The subsequent list registers all variables that encode
+           the loop state variables. This is crucial: omitting a variable may
+           lead to undefined behavior. */
+        dr::Loop<Bool> loop("AcousticPath", sampler, ray, throughput, depth, distance, valid_ray,
+                            hit_emitter_before, prev_si, prev_bsdf_pdf, prev_bsdf_delta, active);
+
+        /* Inform the loop about the maximum number of loop iterations.
+           This accelerates wavefront-style rendering by avoiding costly
+           synchronization points that check the 'active' flag. */
+        loop.set_max_iterations(m_max_depth);
+
+        while (loop(active)) {
+            /* dr::Loop implicitly masks all code in the loop using the 'active'
+               flag, so there is no need to pass it to every function */
+
+            SurfaceInteraction3f si =
+                scene->ray_intersect(ray,
+                                     /* ray_flags = */ +RayFlags::All,
+                                     /* coherent = */ dr::eq(depth, 0u));
+
+            distance += si.t;
+
+            // ---------------------- Direct emission ----------------------
+
+            /* dr::any_or() checks for active entries in the provided boolean
+               array. JIT/Megakernel modes can't do this test efficiently as
+               each Monte Carlo sample runs independently. In this case,
+               dr::any_or<..>() returns the template argument (true) which means
+               that the 'if' statement is always conservatively taken. */
+            Bool hit_emitter = dr::neq(si.emitter(scene), nullptr);
+            if (m_enable_hit_model && dr::any_or<true>(hit_emitter)) {
+                DirectionSample3f ds(scene, si, prev_si);
+                Float em_pdf = 0.f;
+
+                if (dr::any_or<true>(!prev_bsdf_delta))
+                    em_pdf = scene->pdf_emitter_direction(prev_si, ds,
+                                                          !prev_bsdf_delta);
+
+                // Compute MIS weight for emitter sample from previous bounce
+                Float mis_bsdf = mis_weight(prev_bsdf_pdf, em_pdf);
+
+                /* TODO REMOVE
+                 * mitsuba2:
+                 * emission_weight = mis_bsdf
+                */
+
+                // Put the result while checking for double hits (rays that are traced through the detector)
+                Float time_frac = (distance / max_distance) * hist->size().x();
+                Bool valid_hit  = hit_emitter && !hit_emitter_before;
+                hist->put(
+                    { time_frac, band_id },
+                    throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf,
+                    valid_hit);
+
+                // TODO wofür wird das gebruacht?
+                // hit_emitter_before = hit_emitter;
+                hit_emitter_before |= hit_emitter;
+            }
+
+            // Continue tracing the path at this point?
+            Bool active_next = (depth + 1 < m_max_depth) && si.is_valid();
+
+            if (dr::none_or<false>(active_next))
+                break; // early exit for scalar mode
+
+            BSDFPtr bsdf = si.bsdf(ray);
+
+            // ---------------------- Emitter sampling ----------------------
+
+            // Perform emitter sampling?
+            Mask active_em = active_next && has_flag(bsdf->flags(), BSDFFlags::Smooth);
+
+            DirectionSample3f ds = dr::zeros<DirectionSample3f>();
+            Spectrum em_weight = dr::zeros<Spectrum>();
+            Vector3f wo = dr::zeros<Vector3f>();
+
+            if (m_enable_emitter_sampling && dr::any_or<true>(active_em)) {
+                // Sample the emitter
+                std::tie(ds, em_weight) = scene->sample_emitter_direction(
+                    si, sampler->next_2d(), true, active_em);
+                active_em &= dr::neq(ds.pdf, 0.f);
+
+                /* Given the detached emitter sample, recompute its contribution
+                   with AD to enable light source optimization. */
+                if (dr::grad_enabled(si.p)) {
+                    ds.d = dr::normalize(ds.p - si.p);
+                    Spectrum em_val = scene->eval_emitter_direction(si, ds, active_em);
+                    em_weight = dr::select(dr::neq(ds.pdf, 0), em_val / ds.pdf, 0);
+                }
+
+                wo = si.to_local(ds.d);
+            }
+
+            // ------ Evaluate BSDF * cos(theta) and sample direction -------
+
+            Float sample_1 = sampler->next_1d();
+            Point2f sample_2 = sampler->next_2d();
+
+            auto [bsdf_val, bsdf_pdf, bsdf_sample, bsdf_weight]
+                = bsdf->eval_pdf_sample(bsdf_ctx, si, wo, sample_1, sample_2);
+
+            // --------------- Emitter sampling contribution ----------------
+
+            if (dr::any_or<true>(active_em)) {
+                bsdf_val = si.to_world_mueller(bsdf_val, -wo, si.wi);
+
+                // Compute the MIS weight
+                Float mis_em =
+                    dr::select(ds.delta, 1.f, mis_weight(ds.pdf, bsdf_pdf));
+
+                // Put the result while
+                Float time_frac = ((distance + ds.dist) / max_distance) * hist->size().x();
+                Bool valid_hit  = hit_emitter && !hit_emitter_before;
+                hist->put(
+                    { time_frac, band_id },
+                    throughput * bsdf_val * em_weight * mis_em,
+                    active_em);
+            }
+
+            // ---------------------- BSDF sampling ----------------------
+
+            /* TODO REMOVE
+             * mitsuba2:
+             * bs       = bsdf_sample
+             * bsdf_val = bsdf_weight
+            */
+
+            bsdf_weight = si.to_world_mueller(bsdf_weight, -bsdf_sample.wo, si.wi);
+
+            ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
+
+            /* When the path tracer is differentiated, we must be careful that
+               the generated Monte Carlo samples are detached (i.e. don't track
+               derivatives) to avoid bias resulting from the combination of moving
+               samples and discontinuous visibility. We need to re-evaluate the
+               BSDF differentiably with the detached sample in that case. */
+            if (dr::grad_enabled(ray)) {
+                ray = dr::detach<true>(ray);
+
+                // Recompute 'wo' to propagate derivatives to cosine term
+                Vector3f wo_2 = si.to_local(ray.d);
+                auto [bsdf_val_2, bsdf_pdf_2] = bsdf->eval_pdf(bsdf_ctx, si, wo_2, active);
+                bsdf_weight[bsdf_pdf_2 > 0.f] = bsdf_val_2 / dr::detach(bsdf_pdf_2);
+            }
+
+            // ------ Update loop variables based on current interaction ------
+
+            throughput *= bsdf_weight;
+            valid_ray |= active && si.is_valid() &&
+                         !has_flag(bsdf_sample.sampled_type, BSDFFlags::Null);
+
+            // Information about the current vertex needed by the next iteration
+            prev_si = si;
+            prev_bsdf_pdf = bsdf_sample.pdf;
+            prev_bsdf_delta = has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta);
+            // TODO: need has_flag(bs.sampled_type, BSDFFlags::Null) ?
+
+            // -------------------- Stopping criterion ---------------------
+
+            dr::masked(depth, si.is_valid()) += 1;
+            Float throughput_max = dr::max(unpolarized_spectrum(throughput));
+            active = active_next &&  dr::neq(throughput_max, 0.f);
+        }
+
+        return {
+            /* spec  = */ dr::select(valid_ray, throughput, 0.f),
+            /* valid = */ valid_ray
+        };
     }
 
     //! @}
     // =============================================================
 
-    // TODO
     std::string to_string() const override {
-        return tfm::format("AcousticPathIntegrator[\n"
-            "  max_depth = %u,\n"
-            "  stop = %u\n"
-            "]", m_max_depth, m_stop);
+        std::ostringstream oss;
+        oss << "AcousticPathIntegrator["
+            <<  "\n  stop = "            << m_stop
+            << ",\n  max_depth = "       << m_max_depth
+            // << ",\n  wavelength_bins = " << m_wavelength_bins
+            <<  "\n]";
+        return oss.str();
     }
 
-    // TODO: needed? what does that do?
     Float mis_weight(Float pdf_a, Float pdf_b) const {
         pdf_a *= pdf_a;
         pdf_b *= pdf_b;
         return dr::select(pdf_a > 0.f, pdf_a / (pdf_a + pdf_b), 0.f);
+    }
+
+    /**
+     * \brief Perform a Mueller matrix multiplication in polarized modes, and a
+     * fused multiply-add otherwise.
+     */
+    Spectrum spec_fma(const Spectrum &a, const Spectrum &b,
+                      const Spectrum &c) const {
+        if constexpr (is_polarized_v<Spectrum>)
+            return a * b + c;
+        else
+            return dr::fmadd(a, b, c);
     }
 
     /// Get the bins for each which we integrate
@@ -220,19 +410,17 @@ protected:
         Point2f direction_sample = sampler->next_2d(active);
         Float wavelength_sample = dr::gather<Float>(m_wavelength_bins.array(), band_id, active);
         auto [ray, ray_weight] = sensor->sample_ray(0, wavelength_sample, { 0., 0. }, direction_sample);
-        trace_acoustic_ray(scene, sampler, ray, hist, band_id, active);
+        sample(scene, sampler, ray, hist, band_id, active);
         sampler->advance();
     }
 
 protected:
-    // float m_max_time;
-    // size_t m_time_step_count;
-    // size_t m_wav_bin_count;
+    float m_max_time;
     TensorXf m_wavelength_bins;
 
-    // bool m_skip_direct;
-    // bool m_enable_hit_model;
-    // bool m_enable_emitter_sampling;
+    bool m_skip_direct;
+    bool m_enable_hit_model;
+    bool m_enable_emitter_sampling;
 };
 
 MI_IMPLEMENT_CLASS_VARIANT(AcousticPathIntegrator, MonteCarloIntegrator)
