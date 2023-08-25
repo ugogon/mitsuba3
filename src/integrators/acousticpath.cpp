@@ -175,7 +175,7 @@ public:
 
         // If m_hide_emitters == false, the environment emitter will be visible
         Mask valid_ray                 = !m_hide_emitters && dr::neq(scene->environment(), nullptr);
-        Mask hit_emitter_before = false;
+        // Mask hit_emitter_before = false;
 
         // Variables caching information from the previous bounce
         Interaction3f prev_si          = dr::zeros<Interaction3f>();
@@ -197,7 +197,8 @@ public:
            the loop state variables. This is crucial: omitting a variable may
            lead to undefined behavior. */
         dr::Loop<Bool> loop("AcousticPath", sampler, ray, throughput, depth, distance, valid_ray,
-                            hit_emitter_before, prev_si, prev_bsdf_pdf, prev_bsdf_delta, active);
+                            //hit_emitter_before,
+                            prev_si, prev_bsdf_pdf, prev_bsdf_delta, active);
 
         /* Inform the loop about the maximum number of loop iterations.
            This accelerates wavefront-style rendering by avoiding costly
@@ -222,6 +223,7 @@ public:
                each Monte Carlo sample runs independently. In this case,
                dr::any_or<..>() returns the template argument (true) which means
                that the 'if' statement is always conservatively taken. */
+            // TODO: hit_emitter(_before) ausbauen
             Bool hit_emitter = dr::neq(si.emitter(scene), nullptr);
             if (m_enable_hit_model && dr::any_or<true>(hit_emitter)) {
                 DirectionSample3f ds(scene, si, prev_si);
@@ -241,15 +243,14 @@ public:
 
                 // Put the result while checking for double hits (rays that are traced through the detector)
                 Float time_frac = (distance / max_distance) * hist->size().x();
-                Bool valid_hit  = hit_emitter && !hit_emitter_before;
+                Bool valid_hit  = hit_emitter; // && !hit_emitter_before;
                 hist->put(
                     { time_frac, band_id },
                     throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf,
                     valid_hit);
 
-                // TODO wofür wird das gebruacht?
+                // TODO wofür wird das gebraucht?
                 // hit_emitter_before = hit_emitter;
-                hit_emitter_before |= hit_emitter;
             }
 
             // Continue tracing the path at this point?
@@ -305,11 +306,10 @@ public:
 
                 // Put the result while
                 Float time_frac = ((distance + ds.dist) / max_distance) * hist->size().x();
-                Bool valid_hit  = hit_emitter && !hit_emitter_before;
-                hist->put(
-                    { time_frac, band_id },
-                    throughput * bsdf_val * em_weight * mis_em,
-                    active_em);
+                Spectrum em_throughput = throughput * bsdf_val * em_weight * mis_em;
+                // TODO is this check required?
+                active_em = active_em && dr::any(dr::neq(em_throughput, 0.f));
+                hist->put({ time_frac, band_id }, em_throughput, active_em);
             }
 
             // ---------------------- BSDF sampling ----------------------
