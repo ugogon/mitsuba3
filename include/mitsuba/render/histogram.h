@@ -93,10 +93,10 @@ public:
     const ScalarPoint2i &offset() const { return m_offset; }
 
     /// Return the underlying spectrum buffer
-    TensorXf &data() { return m_data; }
+    TensorXf &tensor() { return m_data; }
 
     /// Return the underlying spectrum buffer (const version)
-    const TensorXf &data() const { return m_data; }
+    const TensorXf &tensor() const { return m_data; }
 
     /// Return the underlying counts for every bin
     TensorXf &counts() { return m_counts; }

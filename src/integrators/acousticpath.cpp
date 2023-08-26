@@ -1,6 +1,7 @@
 #include <tuple>
 #include <mitsuba/core/ray.h>
 #include <mitsuba/core/progress.h>
+#include <mitsuba/core/timer.h>
 #include <mitsuba/core/properties.h>
 #include <mitsuba/render/bsdf.h>
 // #include <mitsuba/render/emitter.h>
@@ -15,7 +16,7 @@ class AcousticPathIntegrator : public MonteCarloIntegrator<Float, Spectrum> {
 public:
     MI_IMPORT_BASE(MonteCarloIntegrator, m_samples_per_pass, m_max_depth, m_hide_emitters,
                    m_render_timer, m_stop)
-    MI_IMPORT_TYPES(Scene, Sensor, Film, Sampler, Histogram, BSDFPtr)
+    MI_IMPORT_TYPES(Scene, Sampler, Medium, Sensor, Film, Histogram, BSDFPtr)
 
     AcousticPathIntegrator(const Properties &props) : Base(props) {
         m_max_time = props.get<float>("max_time", 1.f);
@@ -71,15 +72,14 @@ public:
 
         uint32_t n_passes = spp / spp_per_pass;
 
-        // Determine output channels and prepare the film with this information
-        // size_t n_channels = film->prepare(aov_names()); // TODO
+        film->prepare({ }); // TODO: remove?
 
         m_render_timer.reset();
 
-        // TensorXf result; // TODO
+        TensorXf result;
         if constexpr (!dr::is_jit_v<Float>) {
             // TODO
-            NotImplementedError("TimeDependentIntergrator::render Scalar case");
+            NotImplementedError("AcousticPathIntegrator::render Scalar case");
          } else {
             ref<ProgressReporter> progress = new ProgressReporter("Rendering");
 
@@ -133,30 +133,76 @@ public:
             ref<Histogram> hist = new Histogram(film_size, 1, film->rfilter());
             hist->clear();
 
+            Timer timer;
+
             for (size_t i = 0; i < n_passes; i++) {
                 render_sample(scene, sensor, sampler, hist, band_id);
-                progress->update( (i + 1) / (ScalarFloat) n_passes);
+                progress->update((i + 1) / (ScalarFloat) n_passes);
 
-                // TODO: sampler->advance() required?
+                if (n_passes > 1) {
+                    sampler->advance();
+                    sampler->schedule_state();
+                    dr::eval(hist->tensor());
+                }
             }
 
             std::cout << "wavefront_size: " << wavefront_size << std::endl;
 
             film->put_block(hist);
 
-            // TODO: develop and evaluate stuff?
-         }
+            if (n_passes == 1 && jit_flag(JitFlag::VCallRecord) &&
+                jit_flag(JitFlag::LoopRecord)) {
+                Log(Info, "Computation graph recorded. (took %s)",
+                    util::time_string((float) timer.reset(), true));
+            }
+
+            if (develop) {
+                result = film->develop();
+                dr::schedule(result);
+            } else {
+                film->schedule_storage();
+            }
+
+            if (evaluate) {
+                dr::eval();
+
+                if (n_passes == 1 && jit_flag(JitFlag::VCallRecord) &&
+                    jit_flag(JitFlag::LoopRecord)) {
+                    Log(Info, "Code generation finished. (took %s)",
+                        util::time_string((float) timer.value(), true));
+
+                    /* Separate computation graph recording from the actual
+                       rendering time in single-pass mode */
+                    m_render_timer.reset();
+                }
+
+                dr::sync_thread();
+            }
+        }
 
         if (!m_stop && (evaluate || !dr::is_jit_v<Float>))
             Log(Info, "Rendering finished. (took %s)",
                 util::time_string((float) m_render_timer.value(), true));
 
-        return { }; // TODO: Rückgabewert in mi3 unterscheidet sich zu mi2
+        return result;
+    }
+
+    /// default function signature for proper inheritance
+    std::pair<Spectrum, Bool> sample(const Scene *,
+                                     Sampler *,
+                                     const RayDifferential3f &ray_,
+                                     const Medium * /* medium */,
+                                     Float * /* aovs */,
+                                     Bool active) const override {
+        DRJIT_MARK_USED(ray_);
+        DRJIT_MARK_USED(active);
+        NotImplementedError("AcousticPathIntegrator::sample default arguments");
+        return {};
     }
 
     std::pair<Spectrum, Mask> sample(const Scene *scene,
                                      Sampler *sampler,
-                                     const Ray3f &ray_,
+                                     const RayDifferential3f &ray_,
                                      Histogram *hist,
                                      const UInt32 band_id,
                                      Bool active) const {
@@ -169,6 +215,8 @@ public:
 
         Ray3f ray                      = Ray3f(ray_);
         Spectrum throughput            = 1.f;
+        // Spectrum result               = 0.f;
+        // Float eta                     = 1.f;
         UInt32 depth                   = 0;
         Float distance                 = 0.f;
         const ScalarFloat max_distance = m_max_time * MI_SOUND_SPEED;
@@ -179,12 +227,9 @@ public:
 
         // Variables caching information from the previous bounce
         Interaction3f prev_si          = dr::zeros<Interaction3f>();
-        Float         prev_bsdf_pdf    = 1.f;
+        Float         prev_bsdf_pdf    = m_skip_direct ? 0.f : 1.f;
         Bool          prev_bsdf_delta  = true;
         BSDFContext   bsdf_ctx;
-
-        if (m_skip_direct)
-            prev_bsdf_pdf = 0.f;
 
         /* Set up a Dr.Jit loop. This optimizes away to a normal loop in scalar
            mode, and it generates either a a megakernel (default) or
@@ -196,9 +241,10 @@ public:
            debugging. The subsequent list registers all variables that encode
            the loop state variables. This is crucial: omitting a variable may
            lead to undefined behavior. */
-        dr::Loop<Bool> loop("AcousticPath", sampler, ray, throughput, depth, distance, valid_ray,
-                            //hit_emitter_before,
-                            prev_si, prev_bsdf_pdf, prev_bsdf_delta, active);
+        dr::Loop<Bool> loop("AcousticPath", sampler, ray, throughput, /* result, */
+                            /* eta, */ depth, distance, valid_ray, /* hit_emitter_before, */
+                            prev_si, prev_bsdf_pdf,
+                            prev_bsdf_delta, active);
 
         /* Inform the loop about the maximum number of loop iterations.
            This accelerates wavefront-style rendering by avoiding costly
@@ -218,12 +264,12 @@ public:
 
             // ---------------------- Direct emission ----------------------
 
+            // TODO: hit_emitter(_before) ausbauen
             /* dr::any_or() checks for active entries in the provided boolean
                array. JIT/Megakernel modes can't do this test efficiently as
                each Monte Carlo sample runs independently. In this case,
                dr::any_or<..>() returns the template argument (true) which means
                that the 'if' statement is always conservatively taken. */
-            // TODO: hit_emitter(_before) ausbauen
             Bool hit_emitter = dr::neq(si.emitter(scene), nullptr);
             if (m_enable_hit_model && dr::any_or<true>(hit_emitter)) {
                 DirectionSample3f ds(scene, si, prev_si);
@@ -264,6 +310,7 @@ public:
             // ---------------------- Emitter sampling ----------------------
 
             // Perform emitter sampling?
+            // TODO: BSDFFlags::DiffuseReflection?
             Mask active_em = active_next && has_flag(bsdf->flags(), BSDFFlags::Smooth);
 
             DirectionSample3f ds = dr::zeros<DirectionSample3f>();
@@ -348,13 +395,29 @@ public:
             prev_si = si;
             prev_bsdf_pdf = bsdf_sample.pdf;
             prev_bsdf_delta = has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta);
-            // TODO: need has_flag(bs.sampled_type, BSDFFlags::Null) ?
 
             // -------------------- Stopping criterion ---------------------
 
             dr::masked(depth, si.is_valid()) += 1;
+
             Float throughput_max = dr::max(unpolarized_spectrum(throughput));
-            active = active_next &&  dr::neq(throughput_max, 0.f);
+
+            // TODO: include rr sampling?
+            /*
+            Float rr_prob = dr::minimum(throughput_max * dr::sqr(eta), .95f);
+            Mask rr_active = depth >= m_rr_depth,
+                 rr_continue = sampler->next_1d() < rr_prob;
+            */
+
+            /* Differentiable variants of the renderer require the the russian
+               roulette sampling weight to be detached to avoid bias. This is a
+               no-op in non-differentiable variants. */
+            /*
+            throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
+            */
+
+            active = active_next && // (!rr_active || rr_continue) &&
+                     dr::neq(throughput_max, 0.f);
         }
 
         return {
@@ -409,7 +472,8 @@ protected:
                   Mask active = true) const {
         Point2f direction_sample = sampler->next_2d(active);
         Float wavelength_sample = dr::gather<Float>(m_wavelength_bins.array(), band_id, active);
-        auto [ray, ray_weight] = sensor->sample_ray(0, wavelength_sample, { 0., 0. }, direction_sample);
+        auto [ray, ray_weight] = sensor->sample_ray_differential(
+            0., wavelength_sample, { 0., 0. }, direction_sample);
         sample(scene, sampler, ray, hist, band_id, active);
         sampler->advance();
     }
