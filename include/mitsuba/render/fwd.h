@@ -17,7 +17,6 @@ template <typename Float, typename Spectrum> class Histogram;
 template <typename Float, typename Spectrum> class Integrator;
 template <typename Float, typename Spectrum> class SamplingIntegrator;
 template <typename Float, typename Spectrum> class MonteCarloIntegrator;
-template <typename Float, typename Spectrum> class TimeDependentIntegrator;
 template <typename Float, typename Spectrum> class AdjointIntegrator;
 template <typename Float, typename Spectrum> class Medium;
 template <typename Float, typename Spectrum> class Mesh;
@@ -82,7 +81,6 @@ template <typename Float_, typename Spectrum_> struct RenderAliases {
     using Integrator             = mitsuba::Integrator<FloatU, SpectrumU>;
     using SamplingIntegrator     = mitsuba::SamplingIntegrator<FloatU, SpectrumU>;
     using MonteCarloIntegrator   = mitsuba::MonteCarloIntegrator<FloatU, SpectrumU>;
-    using TimeDependentIntegrator= mitsuba::TimeDependentIntegrator<FloatU, SpectrumU>;
     using AdjointIntegrator      = mitsuba::AdjointIntegrator<FloatU, SpectrumU>;
     using BSDF                   = mitsuba::BSDF<FloatU, SpectrumU>;
     using OptixDenoiser          = mitsuba::OptixDenoiser<FloatU, SpectrumU>;
@@ -171,7 +169,6 @@ template <typename Float_, typename Spectrum_> struct RenderAliases {
     using Integrator             = typename RenderAliases::Integrator;                             \
     using SamplingIntegrator     = typename RenderAliases::SamplingIntegrator;                     \
     using MonteCarloIntegrator   = typename RenderAliases::MonteCarloIntegrator;                   \
-    using TimeDependentIntegrator= typename RenderAliases::MonteCarloIntegrator;                   \
     using AdjointIntegrator      = typename RenderAliases::AdjointIntegrator;                      \
     using BSDF                   = typename RenderAliases::BSDF;                                   \
     using OptixDenoiser          = typename RenderAliases::OptixDenoiser;                          \

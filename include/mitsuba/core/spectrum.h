@@ -127,6 +127,7 @@ struct Spectrum<dr::detail::MaskedArray<Value_>, Size_>
 #define MI_CIE_MAX           830.f
 #define MI_CIE_SAMPLES       95
 
+// TODO: What is needed here?
 #define MI_SOUND_SPEED       343
 #define MI_SOUND_MIN         0.017f
 #define MI_SOUND_MAX         17.f

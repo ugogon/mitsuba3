@@ -23,21 +23,9 @@ public:
         if (m_max_time <= 0.f)
             Throw("\"max_time\" must be set to a value greater than zero!");
 
-        // Allocate space
-        std::vector<std::string> wavelengths_str =
-            string::tokenize(props.get<std::string>("wavelength_bins"), " ,");
-        m_wavelength_bins = dr::zeros<TensorXf>(wavelengths_str.size());
-
-        // Copy and convert to wavelengths
-        for (size_t i = 0; i < wavelengths_str.size(); ++i) {
-            try {
-                Float wav = std::stod(wavelengths_str[i]);
-                dr::scatter(m_wavelength_bins.array(), wav, UInt32(i));
-            } catch (...) {
-                Throw("Could not parse floating point value '%s'",
-                      wavelengths_str[i]);
-            }
-        }
+        m_n_wav_bins = props.get<uint32_t>("n_wav_bins", 6u);
+        if (m_n_wav_bins < 1u)
+            Throw("\"m_n_wav_bins\" must be set to a value greater than zero!");
 
         m_skip_direct = props.get<bool>("skip_direct", false);
         m_enable_hit_model = props.get<bool>("enable_hit_model", true);
@@ -292,6 +280,7 @@ public:
                 Bool valid_hit  = hit_emitter; // && !hit_emitter_before;
                 hist->put(
                     { time_frac, band_id },
+                    { },
                     throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf,
                     valid_hit);
 
@@ -356,7 +345,7 @@ public:
                 Spectrum em_throughput = throughput * bsdf_val * em_weight * mis_em;
                 // TODO is this check required?
                 active_em = active_em && dr::any(dr::neq(em_throughput, 0.f));
-                hist->put({ time_frac, band_id }, em_throughput, active_em);
+                hist->put({ time_frac, band_id }, { }, em_throughput, active_em);
             }
 
             // ---------------------- BSDF sampling ----------------------
@@ -457,30 +446,34 @@ public:
             return dr::fmadd(a, b, c);
     }
 
-    /// Get the bins for each which we integrate
-    TensorXf wavelength_bins() const { return m_wavelength_bins; }
-
     MI_DECLARE_CLASS()
 
 protected:
 
     void render_sample(const Scene *scene,
-                  const Sensor *sensor,
-                  Sampler *sampler,
-                  Histogram *hist,
-                  const UInt32 band_id,
-                  Mask active = true) const {
+                       const Sensor *sensor,
+                       Sampler *sampler,
+                       Histogram *hist, // TODO: replace by `ImageBlock *block,`
+                       // Float *aovs,
+                       // const Vector2f &pos,
+                       const UInt32 band_id,
+                       Mask active = true) const {
         Point2f direction_sample = sampler->next_2d(active);
-        Float wavelength_sample = dr::gather<Float>(m_wavelength_bins.array(), band_id, active);
+
+        DynamicBuffer<Float> wavelength_bins = dr::arange<DynamicBuffer<Float>>(m_n_wav_bins) + 1.f;
+        Float wavelength_sample = dr::gather<Float>(wavelength_bins, band_id, active);
+
         auto [ray, ray_weight] = sensor->sample_ray_differential(
             0., wavelength_sample, { 0., 0. }, direction_sample);
+
         sample(scene, sampler, ray, hist, band_id, active);
+
         sampler->advance();
     }
 
 protected:
     float m_max_time;
-    TensorXf m_wavelength_bins;
+    size_t m_n_wav_bins;
 
     bool m_skip_direct;
     bool m_enable_hit_model;
