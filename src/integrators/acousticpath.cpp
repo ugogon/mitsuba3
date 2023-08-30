@@ -5,7 +5,6 @@
 #include <mitsuba/core/properties.h>
 #include <mitsuba/render/bsdf.h>
 // #include <mitsuba/render/emitter.h>
-#include <mitsuba/render/histogram.h>
 #include <mitsuba/render/integrator.h>
 #include <mitsuba/render/records.h>
 
@@ -16,7 +15,7 @@ class AcousticPathIntegrator : public MonteCarloIntegrator<Float, Spectrum> {
 public:
     MI_IMPORT_BASE(MonteCarloIntegrator, m_samples_per_pass, m_max_depth, m_hide_emitters,
                    m_render_timer, m_stop)
-    MI_IMPORT_TYPES(Scene, Sampler, Medium, Sensor, Film, Histogram, BSDFPtr)
+    MI_IMPORT_TYPES(Scene, Sensor, Film, ImageBlock, Medium, Sampler, BSDFPtr)
 
     AcousticPathIntegrator(const Properties &props) : Base(props) {
         m_max_time = props.get<float>("max_time", 1.f);
@@ -106,28 +105,30 @@ public:
             // Seed the underlying random number generators, if applicable
             sampler->seed(seed, (uint32_t) wavefront_size);
 
+            // Allocate a large image block that will receive the entire rendering
+            ref<ImageBlock> block = film->create_block();
+            block->set_offset(film->crop_offset());
+            block->set_coalesce(false); // TODO: remove?
+
             UInt32 band_id = dr::arange<UInt32>((uint32_t) wavefront_size);
             band_id /= dr::opaque<UInt32>(film_size.x() * spp_per_pass);
-
-            ref<Histogram> hist = new Histogram(film_size, 1, film->rfilter());
-            hist->clear();
 
             Timer timer;
 
             for (size_t i = 0; i < n_passes; i++) {
-                render_sample(scene, sensor, sampler, hist, band_id);
+                render_sample(scene, sensor, sampler, block, band_id);
                 progress->update((i + 1) / (ScalarFloat) n_passes);
 
                 if (n_passes > 1) {
                     sampler->advance();
                     sampler->schedule_state();
-                    dr::eval(hist->tensor());
+                    dr::eval(block->tensor());
                 }
             }
 
             std::cout << "wavefront_size: " << wavefront_size << std::endl;
 
-            film->put_block(hist);
+            film->put_block(block);
 
             if (n_passes == 1 && jit_flag(JitFlag::VCallRecord) &&
                 jit_flag(JitFlag::LoopRecord)) {
@@ -179,7 +180,7 @@ public:
     std::pair<Spectrum, Mask> sample(const Scene *scene,
                                      Sampler *sampler,
                                      const RayDifferential3f &ray_,
-                                     Histogram *hist,
+                                     ImageBlock *block,
                                      const UInt32 band_id,
                                      Bool active) const {
         MI_MASKED_FUNCTION(ProfilerPhase::SamplingIntegratorSample, active);
@@ -264,7 +265,7 @@ public:
                 */
 
                 // Put the result while checking for double hits (rays that are traced through the detector)
-                Float time_frac = (distance / max_distance) * hist->size().x();
+                Float time_frac = (distance / max_distance) * block->size().x();
                 Bool valid_hit  = hit_emitter; // && !hit_emitter_before;
                 // hist->put(
                 //     { time_frac, band_id },
@@ -329,7 +330,7 @@ public:
                     dr::select(ds.delta, 1.f, mis_weight(ds.pdf, bsdf_pdf));
 
                 // Put the result while
-                Float time_frac = ((distance + ds.dist) / max_distance) * hist->size().x();
+                Float time_frac = ((distance + ds.dist) / max_distance) * block->size().x();
                 Spectrum em_throughput = throughput * bsdf_val * em_weight * mis_em;
                 // TODO is this check required?
                 active_em = active_em && dr::any(dr::neq(em_throughput, 0.f));
@@ -441,7 +442,7 @@ protected:
     void render_sample(const Scene *scene,
                        const Sensor *sensor,
                        Sampler *sampler,
-                       Histogram *hist, // TODO: replace by `ImageBlock *block,`
+                       ImageBlock *block,
                        // Float *aovs,
                        // const Vector2f &pos,
                        const UInt32 band_id,
@@ -453,7 +454,7 @@ protected:
         auto [ray, ray_weight] = sensor->sample_ray_differential(
             0., wavelength_sample, { 0., 0. }, direction_sample);
 
-        sample(scene, sampler, ray, hist, band_id, active);
+        sample(scene, sampler, ray, block, band_id, active);
 
         sampler->advance();
     }
