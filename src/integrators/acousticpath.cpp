@@ -23,10 +23,6 @@ public:
         if (m_max_time <= 0.f)
             Throw("\"max_time\" must be set to a value greater than zero!");
 
-        m_n_wav_bins = props.get<uint32_t>("n_wav_bins", 6u);
-        if (m_n_wav_bins < 1u)
-            Throw("\"m_n_wav_bins\" must be set to a value greater than zero!");
-
         m_skip_direct = props.get<bool>("skip_direct", false);
         m_enable_hit_model = props.get<bool>("enable_hit_model", true);
         m_enable_emitter_sampling = props.get<bool>("enable_emitter_sampling", true);
@@ -71,8 +67,9 @@ public:
          } else {
             ref<ProgressReporter> progress = new ProgressReporter("Rendering");
 
-            size_t wavefront_size = (size_t) film_size.x() *
-                                    (size_t) film_size.y() * (size_t) spp_per_pass,
+            size_t wavefront_size = (size_t) film_size.x() * // time bins
+                                    (size_t) film_size.y() * // wav bins
+                                    (size_t) spp_per_pass,
                    wavefront_size_limit = 0xffffffffu;
 
             if (wavefront_size > wavefront_size_limit) {
@@ -109,14 +106,8 @@ public:
             // Seed the underlying random number generators, if applicable
             sampler->seed(seed, (uint32_t) wavefront_size);
 
-            // TODO: was geben idx und band_id an?
-            UInt32 idx = dr::arange<UInt32>((uint32_t) wavefront_size);
-            if (spp_per_pass > 1)
-                idx /= dr::opaque<UInt32>(spp_per_pass);
-
-            UInt32 band_id = dr::zeros<UInt32>((uint32_t) wavefront_size);
-            if (film_size.y() > 1)
-                band_id = idx % film_size.y();
+            UInt32 band_id = dr::arange<UInt32>((uint32_t) wavefront_size);
+            band_id /= dr::opaque<UInt32>(film_size.x() * spp_per_pass);
 
             ref<Histogram> hist = new Histogram(film_size, 1, film->rfilter());
             hist->clear();
@@ -178,14 +169,11 @@ public:
     /// default function signature for proper inheritance
     std::pair<Spectrum, Bool> sample(const Scene *,
                                      Sampler *,
-                                     const RayDifferential3f &ray_,
+                                     const RayDifferential3f &,
                                      const Medium * /* medium */,
                                      Float * /* aovs */,
-                                     Bool active) const override {
-        DRJIT_MARK_USED(ray_);
-        DRJIT_MARK_USED(active);
+                                     Bool) const override {
         NotImplementedError("AcousticPathIntegrator::sample default arguments");
-        return {};
     }
 
     std::pair<Spectrum, Mask> sample(const Scene *scene,
@@ -278,11 +266,11 @@ public:
                 // Put the result while checking for double hits (rays that are traced through the detector)
                 Float time_frac = (distance / max_distance) * hist->size().x();
                 Bool valid_hit  = hit_emitter; // && !hit_emitter_before;
-                hist->put(
-                    { time_frac, band_id },
-                    { },
-                    throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf,
-                    valid_hit);
+                // hist->put(
+                //     { time_frac, band_id },
+                //     { },
+                //     throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf,
+                //     valid_hit);
 
                 // TODO wofür wird das gebraucht?
                 // hit_emitter_before = hit_emitter;
@@ -345,7 +333,7 @@ public:
                 Spectrum em_throughput = throughput * bsdf_val * em_weight * mis_em;
                 // TODO is this check required?
                 active_em = active_em && dr::any(dr::neq(em_throughput, 0.f));
-                hist->put({ time_frac, band_id }, { }, em_throughput, active_em);
+                // hist->put({ time_frac, band_id }, { }, em_throughput, active_em);
             }
 
             // ---------------------- BSDF sampling ----------------------
@@ -458,10 +446,9 @@ protected:
                        // const Vector2f &pos,
                        const UInt32 band_id,
                        Mask active = true) const {
-        Point2f direction_sample = sampler->next_2d(active);
 
-        DynamicBuffer<Float> wavelength_bins = dr::arange<DynamicBuffer<Float>>(m_n_wav_bins) + 1.f;
-        Float wavelength_sample = dr::gather<Float>(wavelength_bins, band_id, active);
+        Point2f direction_sample = sampler->next_2d(active);
+        Float wavelength_sample = Float(band_id) + 1.f;
 
         auto [ray, ray_weight] = sensor->sample_ray_differential(
             0., wavelength_sample, { 0., 0. }, direction_sample);
@@ -473,7 +460,6 @@ protected:
 
 protected:
     float m_max_time;
-    size_t m_n_wav_bins;
 
     bool m_skip_direct;
     bool m_enable_hit_model;
