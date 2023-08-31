@@ -4,7 +4,7 @@
 #include <mitsuba/core/timer.h>
 #include <mitsuba/core/properties.h>
 #include <mitsuba/render/bsdf.h>
-// #include <mitsuba/render/emitter.h>
+#include <mitsuba/render/emitter.h>
 #include <mitsuba/render/integrator.h>
 #include <mitsuba/render/records.h>
 
@@ -320,8 +320,8 @@ public:
 
                 Float time_frac = ((distance + ds.dist) / max_distance) * block->size().x();
                 Float data[2] { (throughput * bsdf_val * em_weight * mis_em).x(), Float(1.) };
-                active_em = active_em && dr::any(dr::neq(data[0], 0.f)); // TODO is this check required?
-                block->put({ time_frac, band_id }, data, active_em);
+                // active_em = active_em && dr::any(dr::neq(data[0], 0.f)); // TODO is this check required?
+                block->put({ time_frac, band_id }, data);
             }
 
             // ---------------------- BSDF sampling ----------------------
