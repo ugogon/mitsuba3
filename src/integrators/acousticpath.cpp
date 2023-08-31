@@ -55,7 +55,7 @@ public:
 
         uint32_t n_passes = spp / spp_per_pass;
 
-        film->prepare({ }); // TODO: remove?
+        film->prepare({ });
 
         m_render_timer.reset();
 
@@ -108,7 +108,6 @@ public:
             // Allocate a large image block that will receive the entire rendering
             ref<ImageBlock> block = film->create_block();
             block->set_offset(film->crop_offset());
-            block->set_coalesce(false); // TODO: remove?
 
             UInt32 band_id = dr::arange<UInt32>((uint32_t) wavefront_size);
             band_id /= dr::opaque<UInt32>(film_size.x() * spp_per_pass);
@@ -241,14 +240,12 @@ public:
 
             // ---------------------- Direct emission ----------------------
 
-            // TODO: hit_emitter(_before) ausbauen
             /* dr::any_or() checks for active entries in the provided boolean
                array. JIT/Megakernel modes can't do this test efficiently as
                each Monte Carlo sample runs independently. In this case,
                dr::any_or<..>() returns the template argument (true) which means
                that the 'if' statement is always conservatively taken. */
-            Bool hit_emitter = dr::neq(si.emitter(scene), nullptr);
-            if (m_enable_hit_model && dr::any_or<true>(hit_emitter)) {
+            if (m_enable_hit_model && dr::any_or<true>(dr::neq(si.emitter(scene), nullptr))) {
                 DirectionSample3f ds(scene, si, prev_si);
                 Float em_pdf = 0.f;
 
@@ -264,17 +261,9 @@ public:
                  * emission_weight = mis_bsdf
                 */
 
-                // Put the result while checking for double hits (rays that are traced through the detector)
                 Float time_frac = (distance / max_distance) * block->size().x();
-                Bool valid_hit  = hit_emitter; // && !hit_emitter_before;
-                // hist->put(
-                //     { time_frac, band_id },
-                //     { },
-                //     throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf,
-                //     valid_hit);
-
-                // TODO wofür wird das gebraucht?
-                // hit_emitter_before = hit_emitter;
+                Float data[2] { (throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf).x(), Float(1.) };
+                block->put({ time_frac, band_id }, data);
             }
 
             // Continue tracing the path at this point?
@@ -329,12 +318,10 @@ public:
                 Float mis_em =
                     dr::select(ds.delta, 1.f, mis_weight(ds.pdf, bsdf_pdf));
 
-                // Put the result while
                 Float time_frac = ((distance + ds.dist) / max_distance) * block->size().x();
-                Spectrum em_throughput = throughput * bsdf_val * em_weight * mis_em;
-                // TODO is this check required?
-                active_em = active_em && dr::any(dr::neq(em_throughput, 0.f));
-                // hist->put({ time_frac, band_id }, { }, em_throughput, active_em);
+                Float data[2] { (throughput * bsdf_val * em_weight * mis_em).x(), Float(1.) };
+                active_em = active_em && dr::any(dr::neq(data[0], 0.f)); // TODO is this check required?
+                block->put({ time_frac, band_id }, data, active_em);
             }
 
             // ---------------------- BSDF sampling ----------------------
