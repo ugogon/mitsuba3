@@ -1,5 +1,6 @@
 set(MI_PLUGIN_PREFIX "bsdfs")
 
+add_plugin(acousticbsdf         acousticbsdf.cpp)
 add_plugin(blendbsdf            blendbsdf.cpp)
 add_plugin(bumpmap              bumpmap.cpp)
 add_plugin(conductor            conductor.cpp)
