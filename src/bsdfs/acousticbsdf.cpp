@@ -94,11 +94,9 @@ public:
         active &= cos_theta_i > 0.f && cos_theta_o > 0.f;
 
         Float scatter = dr::clamp(m_scatter->eval_1(si, active), 0.f, 1.f);
-
-        Float pdf_specular = dr::select(reflect(si.wi) == wo, 1.f, 0.f);
         Float pdf_diffuse = warp::square_to_cosine_hemisphere_pdf(wo);
 
-        return dr::select(active, (pdf_specular * (1.f - scatter)) + (pdf_diffuse * scatter), 0.f);
+        return dr::select(active, pdf_diffuse * scatter, 0.f);
     }
 
     std::pair<Spectrum, Float> eval_pdf(const BSDFContext & /* ctx */,
@@ -114,16 +112,14 @@ public:
 
         Float scatter = dr::clamp(m_scatter->eval_1(si, active), 0.f, 1.f);
 
-        Float pdf_specular = dr::select(reflect(si.wi) == wo, 1.f, 0.f);
         Float pdf_diffuse = warp::square_to_cosine_hemisphere_pdf(wo);
 
         UnpolarizedSpectrum reflectance = 1.f - m_absorpt->eval(si, active);
-        UnpolarizedSpectrum value_specular = reflectance * dr::select(reflect(si.wi) == wo, 1.f, 0.f);
         UnpolarizedSpectrum value_diffuse  = reflectance * dr::InvPi<Float> * cos_theta_o;
 
         return {
-            (value_specular * (1.f - scatter) + (value_diffuse * scatter)) & active,
-            dr::select(active, (pdf_specular * (1.f - scatter)) + (pdf_diffuse * scatter), 0.f)
+            (value_diffuse * scatter) & active,
+            dr::select(active, pdf_diffuse * scatter, 0.f)
         };
     }
 
