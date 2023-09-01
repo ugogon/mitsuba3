@@ -244,7 +244,8 @@ public:
                each Monte Carlo sample runs independently. In this case,
                dr::any_or<..>() returns the template argument (true) which means
                that the 'if' statement is always conservatively taken. */
-            if (m_enable_hit_model && dr::any_or<true>(dr::neq(si.emitter(scene), nullptr))) {
+            Mask hit_emitter = dr::neq(si.emitter(scene), nullptr);
+            if (m_enable_hit_model && dr::any_or<true>(hit_emitter)) {
                 DirectionSample3f ds(scene, si, prev_si);
                 Float em_pdf = 0.f;
 
@@ -252,7 +253,8 @@ public:
                     em_pdf = scene->pdf_emitter_direction(prev_si, ds,
                                                           !prev_bsdf_delta);
 
-                // Compute MIS weight for emitter sample from previous bounce
+                /* Compute MIS weight for emitter sample from previous bounce.
+                   If em_pdf = 0, then mis_bsdf = 1. This is the case in the first iteration.*/
                 Float mis_bsdf = mis_weight(prev_bsdf_pdf, em_pdf);
 
                 /* TODO REMOVE
@@ -262,7 +264,7 @@ public:
 
                 Float time_frac = (distance / max_distance) * block->size().x();
                 Float data[2] { (throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf).x(), Float(1.) };
-                block->put({ time_frac, band_id }, data);
+                block->put({ time_frac, band_id }, data, hit_emitter);
             }
 
             // Continue tracing the path at this point?
@@ -319,8 +321,8 @@ public:
 
                 Float time_frac = ((distance + ds.dist) / max_distance) * block->size().x();
                 Float data[2] { (throughput * bsdf_val * em_weight * mis_em).x(), Float(1.) };
-                // active_em = active_em && dr::any(dr::neq(data[0], 0.f)); // TODO is this check required?
-                block->put({ time_frac, band_id }, data);
+                active_em &= data[0] > 0.f;
+                block->put({ time_frac, band_id }, data, active_em);
             }
 
             // ---------------------- BSDF sampling ----------------------
