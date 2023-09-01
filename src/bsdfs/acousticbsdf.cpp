@@ -55,11 +55,11 @@ public:
         active &= cos_theta_i > 0.f;
 
         Float scatter = dr::clamp(m_scatter->eval_1(si, active), 0.f, 1.f);
-        Mask scatter_sample = active && sample1 > scatter;
+        Mask scatter_sample = sample1 > scatter;
 
         BSDFSample3f bs = dr::zeros<BSDFSample3f>();
-        dr::masked(bs, scatter_sample)  = bs_specular;
-        dr::masked(bs, !scatter_sample) = bs_diffuse;
+        dr::masked(bs, active && scatter_sample)  = bs_specular;
+        dr::masked(bs, active && !scatter_sample) = bs_diffuse;
 
         // TODO: eval_1(...) instead of eval(...) ?
         UnpolarizedSpectrum reflectance = 1.f - m_absorpt->eval(si, active);
