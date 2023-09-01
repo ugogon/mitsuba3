@@ -107,7 +107,6 @@ public:
 
             // Allocate a large image block that will receive the entire rendering
             ref<ImageBlock> block = film->create_block();
-            block->set_offset(film->crop_offset());
 
             UInt32 band_id = dr::arange<UInt32>((uint32_t) wavefront_size);
             band_id /= dr::opaque<UInt32>(film_size.x() * spp_per_pass);
