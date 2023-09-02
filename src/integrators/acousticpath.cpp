@@ -18,13 +18,13 @@ public:
     MI_IMPORT_TYPES(Scene, Sensor, Film, ImageBlock, Medium, Sampler, BSDFPtr)
 
     AcousticPathIntegrator(const Properties &props) : Base(props) {
-        m_max_time = props.get<float>("max_time", 1.f);
-        if (m_max_time <= 0.f)
-            Throw("\"max_time\" must be set to a value greater than zero!");
+        m_max_time    = props.get<float>("max_time", 1.f);
+        m_sound_speed = props.get<float>("sound_speed", 343.f);
+        if (m_max_time <= 0.f || m_sound_speed <= 0.f)
+            Throw("\"max_time\" and \"sound_speed\" must be set to a value greater than zero!");
 
-        m_skip_direct = props.get<bool>("skip_direct", false);
-        m_enable_hit_model = props.get<bool>("enable_hit_model", true);
-        m_enable_emitter_sampling = props.get<bool>("enable_emitter_sampling", true);
+        m_skip_direct       = props.get<bool>("skip_direct", false);
+        m_emitter_terminate = props.get<bool>("emitter_terminate", false);
     }
 
     TensorXf render(Scene *scene,
@@ -190,15 +190,13 @@ public:
 
         Ray3f ray                      = Ray3f(ray_);
         Spectrum throughput            = 1.f;
-        // Spectrum result               = 0.f;
         // Float eta                     = 1.f;
         UInt32 depth                   = 0;
         Float distance                 = 0.f;
-        const ScalarFloat max_distance = m_max_time * MI_SOUND_SPEED;
+        const ScalarFloat max_distance = m_max_time * m_sound_speed;
 
         // If m_hide_emitters == false, the environment emitter will be visible
         Mask valid_ray                 = !m_hide_emitters && dr::neq(scene->environment(), nullptr);
-        // Mask hit_emitter_before = false;
 
         // Variables caching information from the previous bounce
         Interaction3f prev_si          = dr::zeros<Interaction3f>();
@@ -216,10 +214,8 @@ public:
            debugging. The subsequent list registers all variables that encode
            the loop state variables. This is crucial: omitting a variable may
            lead to undefined behavior. */
-        dr::Loop<Bool> loop("AcousticPath", sampler, ray, throughput, /* result, */
-                            /* eta, */ depth, distance, valid_ray, /* hit_emitter_before, */
-                            prev_si, prev_bsdf_pdf,
-                            prev_bsdf_delta, active);
+        dr::Loop<Bool> loop("AcousticPath", sampler, ray, throughput, /* eta, */ depth, distance,
+                            valid_ray, prev_si, prev_bsdf_pdf, prev_bsdf_delta, active);
 
         /* Inform the loop about the maximum number of loop iterations.
            This accelerates wavefront-style rendering by avoiding costly
@@ -245,7 +241,7 @@ public:
                dr::any_or<..>() returns the template argument (true) which means
                that the 'if' statement is always conservatively taken. */
             Mask hit_emitter = dr::neq(si.emitter(scene), nullptr);
-            if (m_enable_hit_model && dr::any_or<true>(hit_emitter)) {
+            if (dr::any_or<true>(hit_emitter)) {
                 DirectionSample3f ds(scene, si, prev_si);
                 Float em_pdf = 0.f;
 
@@ -257,18 +253,15 @@ public:
                    If em_pdf = 0, then mis_bsdf = 1. This is the case in the first iteration.*/
                 Float mis_bsdf = mis_weight(prev_bsdf_pdf, em_pdf);
 
-                /* TODO REMOVE
-                 * mitsuba2:
-                 * emission_weight = mis_bsdf
-                */
-
                 Float time_frac = (distance / max_distance) * block->size().x();
-                Float data[2] { (throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf).x(), Float(1.) };
-                block->put({ time_frac, band_id }, data, hit_emitter);
+                Float data[2] = { (throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf).x(), Float(1.f) };
+                block->put({ time_frac, band_id }, data, hit_emitter && data[0] > 0.f);
             }
 
             // Continue tracing the path at this point?
-            Bool active_next = (depth + 1 < m_max_depth) && si.is_valid();
+            Bool active_next = (depth + 1 < m_max_depth)
+                && si.is_valid()
+                && !(m_emitter_terminate && hit_emitter); // if m_emitter_terminate = true a ray stops after hitting a emitter
 
             if (dr::none_or<false>(active_next))
                 break; // early exit for scalar mode
@@ -278,14 +271,13 @@ public:
             // ---------------------- Emitter sampling ----------------------
 
             // Perform emitter sampling?
-            // TODO: BSDFFlags::DiffuseReflection?
             Mask active_em = active_next && has_flag(bsdf->flags(), BSDFFlags::Smooth);
 
             DirectionSample3f ds = dr::zeros<DirectionSample3f>();
             Spectrum em_weight = dr::zeros<Spectrum>();
             Vector3f wo = dr::zeros<Vector3f>();
 
-            if (m_enable_emitter_sampling && dr::any_or<true>(active_em)) {
+            if (dr::any_or<true>(active_em)) {
                 // Sample the emitter
                 std::tie(ds, em_weight) = scene->sample_emitter_direction(
                     si, sampler->next_2d(), true, active_em);
@@ -320,18 +312,12 @@ public:
                     dr::select(ds.delta, 1.f, mis_weight(ds.pdf, bsdf_pdf));
 
                 Float time_frac = ((distance + ds.dist) / max_distance) * block->size().x();
-                Float data[2] { (throughput * bsdf_val * em_weight * mis_em).x(), Float(1.) };
+                Float data[2] = { (throughput * bsdf_val * em_weight * mis_em).x(), Float(1.f) };
                 active_em &= data[0] > 0.f;
                 block->put({ time_frac, band_id }, data, active_em);
             }
 
             // ---------------------- BSDF sampling ----------------------
-
-            /* TODO REMOVE
-             * mitsuba2:
-             * bs       = bsdf_sample
-             * bsdf_val = bsdf_weight
-            */
 
             bsdf_weight = si.to_world_mueller(bsdf_weight, -bsdf_sample.wo, si.wi);
 
@@ -440,7 +426,7 @@ protected:
         Float wavelength_sample = Float(band_id) + 1.f;
 
         auto [ray, ray_weight] = sensor->sample_ray_differential(
-            0., wavelength_sample, { 0., 0. }, direction_sample);
+            0.f, wavelength_sample, { 0.f, 0.f }, direction_sample);
 
         sample(scene, sampler, ray, block, band_id, active);
 
@@ -449,10 +435,10 @@ protected:
 
 protected:
     float m_max_time;
+    float m_sound_speed;
 
     bool m_skip_direct;
-    bool m_enable_hit_model;
-    bool m_enable_emitter_sampling;
+    bool m_emitter_terminate;
 };
 
 MI_IMPLEMENT_CLASS_VARIANT(AcousticPathIntegrator, MonteCarloIntegrator)
