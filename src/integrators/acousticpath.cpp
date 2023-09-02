@@ -1,12 +1,22 @@
+#include <mutex>
 #include <tuple>
-#include <mitsuba/core/ray.h>
+
+#include <mitsuba/core/fwd.h>
+#include <mitsuba/core/profiler.h>
 #include <mitsuba/core/progress.h>
-#include <mitsuba/core/timer.h>
 #include <mitsuba/core/properties.h>
+#include <mitsuba/core/spectrum.h>
+#include <mitsuba/core/ray.h>
+#include <mitsuba/core/timer.h>
+#include <mitsuba/core/util.h>
 #include <mitsuba/render/bsdf.h>
 #include <mitsuba/render/emitter.h>
+#include <mitsuba/render/film.h>
 #include <mitsuba/render/integrator.h>
 #include <mitsuba/render/records.h>
+#include <mitsuba/render/sampler.h>
+#include <mitsuba/render/sensor.h>
+#include <nanothread/nanothread.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -61,14 +71,70 @@ public:
 
         TensorXf result;
         if constexpr (!dr::is_jit_v<Float>) {
-            // TODO
-            NotImplementedError("AcousticPathIntegrator::render Scalar case");
-         } else {
-            ref<ProgressReporter> progress = new ProgressReporter("Rendering");
+            // Render on the CPU using a spiral pattern
+            uint32_t n_threads = (uint32_t) Thread::thread_count();
 
-            size_t wavefront_size = (size_t) film_size.x() * // time bins
-                                    (size_t) film_size.y() * // wav bins
-                                    (size_t) spp_per_pass,
+            Log(Info, "Starting render job (%ux%u, %u sample%s,%s %u thread%s)",
+                film_size.x(), film_size.y(), spp, spp == 1 ? "" : "s",
+                n_passes > 1 ? tfm::format(" %u passes,", n_passes) : "", n_threads,
+                n_threads == 1 ? "" : "s");
+
+            std::mutex mutex;
+            ref<ProgressReporter> progress;
+            Logger* logger = mitsuba::Thread::thread()->logger();
+            if (logger && Info >= logger->log_level())
+                progress = new ProgressReporter("Rendering");
+
+            // Total number of blocks to be handled, including multiple passes.
+            uint32_t total_blocks = film_size.y() * n_passes,
+                     blocks_done = 0;
+
+            // Avoid overlaps in RNG seeding RNG when a seed is manually specified
+            seed *= dr::prod(film_size);
+
+            ThreadEnvironment env;
+            dr::parallel_for(
+                dr::blocked_range<uint32_t>(0, total_blocks, 1),
+                [&](const dr::blocked_range<uint32_t> &range) {
+                    ScopedSetThreadEnvironment set_env(env);
+                    // Fork a non-overlapping sampler for the current worker
+                    ref<Sampler> sampler = sensor->sampler()->fork();
+                    ref<ImageBlock> block = film->create_block(ScalarVector2u(film_size.x(), 1));
+
+                    for (uint32_t i = range.begin(); i != range.end(); ++i) {
+                        sampler->seed(seed * i);
+
+                        UInt32 band_id(i / n_passes);
+                        block->set_offset(ScalarPoint2u(0, band_id));
+
+                        if constexpr (dr::is_array_v<Float>) {
+                            Throw("Not implemented for JIT arrays.");
+                        } else {
+                            block->clear();
+
+                            for (uint32_t j = 0; j < spp_per_pass; ++j) {
+                                render_sample(scene, sensor, sampler, block, band_id);
+                                sampler->advance();
+                            }
+                        }
+
+                        film->put_block(block);
+
+                        /* Critical section: update progress bar */
+                        if (progress) {
+                            std::lock_guard<std::mutex> lock(mutex);
+                            blocks_done++;
+                            progress->update(blocks_done / (float) total_blocks);
+                        }
+                    }
+                }
+            );
+
+            if (develop)
+                result = film->develop();
+         } else {
+            //                               wav_bins      * samples per pixel
+            size_t wavefront_size = (size_t) film_size.y() * (size_t) spp_per_pass,
                    wavefront_size_limit = 0xffffffffu;
 
             if (wavefront_size > wavefront_size_limit) {
@@ -76,8 +142,7 @@ public:
                     (uint32_t)((wavefront_size + wavefront_size_limit - 1) /
                                wavefront_size_limit);
                 n_passes       = spp / spp_per_pass;
-                wavefront_size = (size_t) film_size.x() * (size_t) film_size.y() *
-                                 (size_t) spp_per_pass;
+                wavefront_size = (size_t) film_size.y() * (size_t) spp_per_pass;
 
                 Log(Warn,
                     "The requested rendering task involves %zu Monte Carlo "
@@ -107,15 +172,15 @@ public:
 
             // Allocate a large image block that will receive the entire rendering
             ref<ImageBlock> block = film->create_block();
+            block->set_offset(film->crop_offset());
 
             UInt32 band_id = dr::arange<UInt32>((uint32_t) wavefront_size);
-            band_id /= dr::opaque<UInt32>(film_size.x() * spp_per_pass);
+            band_id /= dr::opaque<UInt32>(spp_per_pass);
 
             Timer timer;
 
             for (size_t i = 0; i < n_passes; i++) {
                 render_sample(scene, sensor, sampler, block, band_id);
-                progress->update((i + 1) / (ScalarFloat) n_passes);
 
                 if (n_passes > 1) {
                     sampler->advance();
@@ -123,8 +188,6 @@ public:
                     dr::eval(block->tensor());
                 }
             }
-
-            std::cout << "wavefront_size: " << wavefront_size << std::endl;
 
             film->put_block(block);
 
@@ -214,7 +277,7 @@ public:
            debugging. The subsequent list registers all variables that encode
            the loop state variables. This is crucial: omitting a variable may
            lead to undefined behavior. */
-        dr::Loop<Bool> loop("AcousticPath", sampler, ray, throughput, /* eta, */ depth, distance,
+        dr::Loop<Bool> loop("AcousticPath", sampler, block, ray, throughput, /* eta, */ depth, distance,
                             valid_ray, prev_si, prev_bsdf_pdf, prev_bsdf_delta, active);
 
         /* Inform the loop about the maximum number of loop iterations.
@@ -417,8 +480,8 @@ protected:
                        const Sensor *sensor,
                        Sampler *sampler,
                        ImageBlock *block,
-                       // Float *aovs,
-                       // const Vector2f &pos,
+                       /* Float *aovs,
+                       const Vector2f &pos, */
                        const UInt32 band_id,
                        Mask active = true) const {
 
@@ -429,8 +492,6 @@ protected:
             0.f, wavelength_sample, { 0.f, 0.f }, direction_sample);
 
         sample(scene, sampler, ray, block, band_id, active);
-
-        sampler->advance();
     }
 
 protected:
