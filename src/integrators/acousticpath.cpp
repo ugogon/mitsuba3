@@ -23,8 +23,8 @@ NAMESPACE_BEGIN(mitsuba)
 template <typename Float, typename Spectrum>
 class AcousticPathIntegrator : public MonteCarloIntegrator<Float, Spectrum> {
 public:
-    MI_IMPORT_BASE(MonteCarloIntegrator, m_samples_per_pass, m_max_depth, m_hide_emitters,
-                   m_render_timer, m_stop)
+    MI_IMPORT_BASE(MonteCarloIntegrator, m_samples_per_pass, m_max_depth, m_rr_depth,
+                   m_hide_emitters, m_render_timer, m_stop)
     MI_IMPORT_TYPES(Scene, Sensor, Film, ImageBlock, Medium, Sampler, BSDFPtr)
 
     AcousticPathIntegrator(const Properties &props) : Base(props) {
@@ -35,6 +35,9 @@ public:
 
         m_skip_direct       = props.get<bool>("skip_direct", false);
         m_emitter_terminate = props.get<bool>("emitter_terminate", false);
+
+        // deactive russian roulette sampling by default
+        m_rr_depth = m_max_depth + 1;
     }
 
     TensorXf render(Scene *scene,
@@ -253,7 +256,7 @@ public:
 
         Ray3f ray                      = Ray3f(ray_);
         Spectrum throughput            = 1.f;
-        // Float eta                     = 1.f;
+        Float eta                      = 1.f;
         UInt32 depth                   = 0;
         Float distance                 = 0.f;
         const ScalarFloat max_distance = m_max_time * m_sound_speed;
@@ -277,7 +280,7 @@ public:
            debugging. The subsequent list registers all variables that encode
            the loop state variables. This is crucial: omitting a variable may
            lead to undefined behavior. */
-        dr::Loop<Bool> loop("AcousticPath", sampler, block, ray, throughput, /* eta, */ depth, distance,
+        dr::Loop<Bool> loop("AcousticPath", sampler, block, ray, throughput, eta, depth, distance,
                             valid_ray, prev_si, prev_bsdf_pdf, prev_bsdf_delta, active);
 
         /* Inform the loop about the maximum number of loop iterations.
@@ -403,6 +406,7 @@ public:
             // ------ Update loop variables based on current interaction ------
 
             throughput *= bsdf_weight;
+            eta *= bsdf_sample.eta;
             valid_ray |= active && si.is_valid() &&
                          !has_flag(bsdf_sample.sampled_type, BSDFFlags::Null);
 
@@ -417,21 +421,16 @@ public:
 
             Float throughput_max = dr::max(unpolarized_spectrum(throughput));
 
-            // TODO: include rr sampling?
-            /*
             Float rr_prob = dr::minimum(throughput_max * dr::sqr(eta), .95f);
             Mask rr_active = depth >= m_rr_depth,
                  rr_continue = sampler->next_1d() < rr_prob;
-            */
 
             /* Differentiable variants of the renderer require the the russian
                roulette sampling weight to be detached to avoid bias. This is a
                no-op in non-differentiable variants. */
-            /*
             throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
-            */
 
-            active = active_next && // (!rr_active || rr_continue) &&
+            active = active_next && (!rr_active || rr_continue) &&
                      dr::neq(throughput_max, 0.f);
         }
 
