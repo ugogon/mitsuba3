@@ -230,7 +230,7 @@ public:
     }
 
     size_t base_channels_count() const override {
-        bool to_y = m_pixel_format == Bitmap::PixelFormat::Y
+        bool to_y = m_pixel_format == Bitmap::PixelFormat::Y 
                  || m_pixel_format == Bitmap::PixelFormat::YA;
 
         /// Number of desired color components
