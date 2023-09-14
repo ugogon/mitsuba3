@@ -131,6 +131,8 @@ public:
     std::string to_string() const override {
         std::ostringstream oss;
         oss << "AcousticBSDF[" << std::endl
+            << "  absorption = " << string::indent(m_absorpt) << "," << std::endl
+            << "  scattering = " << string::indent(m_scatter) << "," << std::endl
             << "]";
         return oss.str();
     }
