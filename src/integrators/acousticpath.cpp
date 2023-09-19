@@ -327,6 +327,7 @@ public:
             // Continue tracing the path at this point?
             Bool active_next = (depth + 1 < m_max_depth)
                 && si.is_valid()
+                && distance <= max_distance
                 && !(m_emitter_terminate && hit_emitter); // if m_emitter_terminate = true a ray stops after hitting a emitter
 
             if (dr::none_or<false>(active_next))
