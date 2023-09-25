@@ -89,7 +89,7 @@ public:
                 progress = new ProgressReporter("Rendering");
 
             // Total number of blocks to be handled, including multiple passes.
-            uint32_t total_blocks = film_size.y() * n_passes,
+            uint32_t total_blocks = film_size.x() * n_passes,
                      blocks_done = 0;
 
             // Avoid overlaps in RNG seeding RNG when a seed is manually specified
@@ -102,7 +102,7 @@ public:
                     ScopedSetThreadEnvironment set_env(env);
                     // Fork a non-overlapping sampler for the current worker
                     ref<Sampler> sampler = sensor->sampler()->fork();
-                    ref<ImageBlock> block = film->create_block(ScalarVector2u(film_size.x(), 1));
+                    ref<ImageBlock> block = film->create_block(ScalarVector2u(1, film_size.y()));
 
                     for (uint32_t i = range.begin(); i != range.end(); ++i) {
                         sampler->seed(seed * i);
@@ -137,7 +137,7 @@ public:
                 result = film->develop();
          } else {
             //                               wav_bins      * samples per pixel
-            size_t wavefront_size = (size_t) film_size.y() * (size_t) spp_per_pass,
+            size_t wavefront_size = (size_t) film_size.x() * (size_t) spp_per_pass,
                    wavefront_size_limit = 0xffffffffu;
 
             if (wavefront_size > wavefront_size_limit) {
@@ -145,7 +145,7 @@ public:
                     (uint32_t)((wavefront_size + wavefront_size_limit - 1) /
                                wavefront_size_limit);
                 n_passes       = spp / spp_per_pass;
-                wavefront_size = (size_t) film_size.y() * (size_t) spp_per_pass;
+                wavefront_size = (size_t) film_size.x() * (size_t) spp_per_pass;
 
                 Log(Warn,
                     "The requested rendering task involves %zu Monte Carlo "
@@ -319,9 +319,9 @@ public:
                    If em_pdf = 0, then mis_bsdf = 1. This is the case in the first iteration.*/
                 Float mis_bsdf = mis_weight(prev_bsdf_pdf, em_pdf);
 
-                Float time_frac = (distance / max_distance) * block->size().x();
+                Float time_frac = (distance / max_distance) * block->size().y();
                 Float data[2] = { (throughput * ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf).x(), Float(1.f) };
-                block->put({ time_frac, band_id }, data, hit_emitter && data[0] > 0.f);
+                block->put({ band_id, time_frac }, data, hit_emitter && data[0] > 0.f);
             }
 
             // Continue tracing the path at this point?
@@ -378,10 +378,10 @@ public:
                 Float mis_em =
                     dr::select(ds.delta, 1.f, mis_weight(ds.pdf, bsdf_pdf));
 
-                Float time_frac = ((distance + ds.dist) / max_distance) * block->size().x();
+                Float time_frac = ((distance + ds.dist) / max_distance) * block->size().y();
                 Float data[2] = { (throughput * bsdf_val * em_weight * mis_em).x(), Float(1.f) };
                 active_em &= data[0] > 0.f;
-                block->put({ time_frac, band_id }, data, active_em);
+                block->put({ band_id, time_frac }, data, active_em);
             }
 
             // ---------------------- BSDF sampling ----------------------
