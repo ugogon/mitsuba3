@@ -178,7 +178,13 @@ public:
             block->set_offset(film->crop_offset());
 
             UInt32 band_id = dr::arange<UInt32>((uint32_t) wavefront_size);
-            band_id /= dr::opaque<UInt32>(spp_per_pass);
+
+            // Try to avoid a division by an unknown constant if we can help it
+            uint32_t log_spp_per_pass = dr::log2i(spp_per_pass);
+            if ((1u << log_spp_per_pass) == spp_per_pass)
+                band_id >>= dr::opaque<UInt32>(log_spp_per_pass);
+            else
+                band_id /= dr::opaque<UInt32>(spp_per_pass);
 
             Timer timer;
 
@@ -485,11 +491,14 @@ protected:
                        const UInt32 band_id,
                        Mask active = true) const {
 
-        Point2f direction_sample = sampler->next_2d(active);
+        Point2f aperture_sample(.5f);
+        if (sensor->needs_aperture_sample())
+            aperture_sample = sampler->next_2d(active);
+
         Float wavelength_sample = Float(band_id) + 1.f;
 
         auto [ray, ray_weight] = sensor->sample_ray_differential(
-            0.f, wavelength_sample, { 0.f, 0.f }, direction_sample);
+            0.f, wavelength_sample, { 0.f, 0.f }, aperture_sample);
 
         sample(scene, sampler, ray, block, band_id, active);
     }
