@@ -286,7 +286,8 @@ public:
            debugging. The subsequent list registers all variables that encode
            the loop state variables. This is crucial: omitting a variable may
            lead to undefined behavior. */
-        dr::Loop<Bool> loop("AcousticPath", sampler, block, ray, throughput, eta, depth, distance,
+        // TODO: loop should keep track of imageblock data
+        dr::Loop<Bool> loop("AcousticPath", sampler, ray, throughput, eta, depth, distance,
                             valid_ray, prev_si, prev_bsdf_pdf, prev_bsdf_delta, active);
 
         /* Inform the loop about the maximum number of loop iterations.
