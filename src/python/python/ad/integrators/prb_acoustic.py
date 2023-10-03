@@ -1,10 +1,11 @@
 from __future__ import annotations # Delayed parsing of type annotations
+from typing import Optional
 
 import drjit as dr
 import mitsuba as mi
 import gc
 
-from .common import RBIntegrator, mis_weight
+from .common import ADIntegrator, RBIntegrator, _ReparamWrapper, mis_weight
 
 class PRBAcousticIntegrator(RBIntegrator):
     def __init__(self, props = mi.Properties()):
@@ -57,10 +58,8 @@ class PRBAcousticIntegrator(RBIntegrator):
                 sampler=sampler,
                 ray=ray,
                 block=block,
-                depth=mi.UInt32(0),
                 δL=None,
                 state_in=None,
-                reparam=None,
                 active=mi.Bool(True)
             )
 
@@ -195,10 +194,10 @@ class PRBAcousticIntegrator(RBIntegrator):
                sampler: mi.Sampler,
                ray: mi.Ray3f,
                block: mi.ImageBlock,
-               δL: Optional[mi.Spectrum],
+               δL: Optional[mi.ImageBlock],
                state_in: Optional[mi.Spectrum],
                active: mi.Bool,
-               **kwargs # Absorbs unused arguments
+               **_ # Absorbs unused arguments
     ) -> Tuple[mi.Spectrum,
                mi.Bool, mi.Spectrum]:
 
@@ -217,7 +216,6 @@ class PRBAcousticIntegrator(RBIntegrator):
         ray = mi.Ray3f(dr.detach(ray))
         depth = mi.UInt32(0)                          # Depth of current vertex
         L = mi.Spectrum(0 if primal else state_in)    # Radiance accumulator
-        δL = mi.Spectrum(δL if δL is not None else 0) # Differential/adjoint radiance
         β = mi.Spectrum(1)                            # Path throughput weight
         η = mi.Float(1)                               # Index of refraction
         active = mi.Bool(active)                      # Active SIMD lanes
@@ -228,10 +226,11 @@ class PRBAcousticIntegrator(RBIntegrator):
         prev_bsdf_delta = mi.Bool(True)
 
         # Record the following loop in its entirety
-        # TODO: loop should keep track of imageblock data
+        # TODO: loop should keep track of imageblock and δL
         loop = mi.Loop(name="PRB Acoustic (%s)" % mode.name,
                        state=lambda: (distance, #block.tensor(),
-                                      sampler, ray, depth, L, δL, β, η, active,
+                                      sampler, ray, depth, L, #δL.tensor(),
+                                      β, η, active,
                                       prev_si, prev_bsdf_pdf, prev_bsdf_delta))
 
         # Specify the max. number of loop iterations (this can help avoid
@@ -270,16 +269,6 @@ class PRBAcousticIntegrator(RBIntegrator):
             with dr.resume_grad(when=not primal):
                 Le = β * mis * ds.emitter.eval(si, active_next)
 
-            pos = mi.Point2f(
-                ray.wavelengths.x - mi.Float(1.0),
-                (distance / max_distance) * block.size().y
-            )
-            block.put(
-                pos=pos,
-                values=mi.Vector2f(Le.x, mi.Float(1.0)),
-                active=(Le.x > 0.0)
-            )
-
             # ---------------------- Emitter sampling ----------------------
 
             # Should we continue tracing to reach one more vertex?
@@ -308,16 +297,6 @@ class PRBAcousticIntegrator(RBIntegrator):
                 mis_em = dr.select(ds.delta, 1, mis_weight(ds.pdf, bsdf_pdf_em))
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
 
-            pos = mi.Point2f(
-                ray.wavelengths.x - mi.Float(1.0),
-                (distance + dr.norm(ds.p - si.p)) / max_distance * block.size().y
-            )
-            block.put(
-                pos=pos,
-                values=mi.Vector2f(Lr_dir.x, mi.Float(1.0)),
-                active=(Lr_dir.x > 0.0)
-            )
-
             # ------------------ Detached BSDF sampling -------------------
 
             bsdf_sample, bsdf_weight = bsdf.sample(bsdf_ctx, si,
@@ -326,6 +305,17 @@ class PRBAcousticIntegrator(RBIntegrator):
                                                    active_next)
 
             # ---- Update loop variables based on current interaction -----
+
+            Le_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                (distance / max_distance) * block.size().y)
+            Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                    (distance + dr.norm(ds.p - si.p)) / max_distance * block.size().y)
+            block.put(pos=Le_pos,
+                      values=mi.Vector2f(Le.x, mi.Float(1.0)),
+                      active=(Le.x > 0.0))
+            block.put(pos=Lr_dir_pos,
+                      values=mi.Vector2f(Lr_dir.x, mi.Float(1.0)),
+                      active=(Lr_dir.x > 0.0))
 
             L = (L + Le + Lr_dir) if primal else (L - Le - Lr_dir)
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo))
@@ -384,7 +374,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                     Lr_ind = L * dr.replace_grad(1, inv_bsdf_val_det * bsdf_val)
 
                     # Differentiable Monte Carlo estimate of all contributions
-                    Lo = Le + Lr_dir + Lr_ind
+                    Lo = Le + Lr_ind
 
                     if dr.flag(dr.JitFlag.VCallRecord) and not dr.grad_enabled(Lo):
                         raise Exception(
@@ -399,9 +389,11 @@ class PRBAcousticIntegrator(RBIntegrator):
 
                     # Propagate derivatives from/to 'Lo' based on 'mode'
                     if mode == dr.ADMode.Backward:
-                        dr.backward_from(δL * Lo)
+                        dr.backward_from(δL.read(pos=Le_pos)[0]     * Lo)
+                        dr.backward_from(δL.read(pos=Lr_dir_pos)[0] * Lr_dir)
                     else:
-                        δL += dr.forward_to(Lo)
+                        raise Exception("Forward mode not supported")
+                        # δL += dr.forward_to(Lo)
 
             depth[si.is_valid()] += 1
             active = active_next
@@ -411,5 +403,153 @@ class PRBAcousticIntegrator(RBIntegrator):
             dr.neq(depth, 0),    # Ray validity flag for alpha blending
             L                    # State for the differential phase
         )
+
+    def render_forward(self: mi.SamplingIntegrator,
+                       scene: mi.Scene,
+                       params: Any,
+                       sensor: Union[int, mi.Sensor] = 0,
+                       seed: int = 0,
+                       spp: int = 0) -> mi.TensorXf:
+        raise Exception("Not implemented")
+
+    def render_backward(self: mi.SamplingIntegrator,
+                        scene: mi.Scene,
+                        params: Any,
+                        grad_in: mi.TensorXf,
+                        sensor: Union[int, mi.Sensor] = 0,
+                        seed: int = 0,
+                        spp: int = 0) -> None:
+
+        if isinstance(sensor, int):
+            sensor = scene.sensors()[sensor]
+
+        film = sensor.film()
+        aovs = self.aovs()
+
+        # Disable derivatives in all of the following
+        with dr.suspend_grad():
+            # Prepare the film and sample generator for rendering
+            sampler, spp = self.prepare(sensor, seed, spp, aovs)
+
+            # When the underlying integrator supports reparameterizations,
+            # perform necessary initialization steps and wrap the result using
+            # the _ReparamWrapper abstraction defined above
+            if hasattr(self, 'reparam'):
+                reparam = _ReparamWrapper(
+                    scene=scene,
+                    params=params,
+                    reparam=self.reparam,
+                    wavefront_size=sampler.wavefront_size(),
+                    seed=seed
+                )
+            else:
+                reparam = None
+
+            # Generate a set of rays starting at the sensor, keep track of
+            # derivatives wrt. sample positions ('pos') if there are any
+            ray, weight, pos, det = self.sample_rays(scene, sensor,
+                                                     sampler, reparam)
+
+            def splatting_and_backward_gradient_image(value: mi.Spectrum,
+                                                      weight: mi.Float,
+                                                      alpha: mi.Float):
+                '''
+                Backward propagation of the gradient image through the sample
+                splatting and weight division steps.
+                '''
+
+                # Prepare an ImageBlock as specified by the film
+                block = film.create_block()
+
+                # Only use the coalescing feature when rendering enough samples
+                block.set_coalesce(block.coalesce() and spp >= 4)
+
+                ADIntegrator._splat_to_block(
+                    block, film, pos,
+                    value=value,
+                    weight=weight,
+                    alpha=alpha,
+                    wavelengths=ray.wavelengths
+                )
+
+                film.put_block(block)
+
+                # Probably a little overkill, but why not.. If there are any
+                # DrJit arrays to be collected by Python's cyclic GC, then
+                # freeing them may enable loop simplifications in dr.eval().
+                gc.collect()
+
+                image = film.develop()
+
+                dr.set_grad(image, grad_in)
+                dr.enqueue(dr.ADMode.Backward, image)
+                dr.traverse(mi.Float, dr.ADMode.Backward)
+
+            # # Differentiate sample splatting and weight division steps to
+            # # retrieve the adjoint radiance (e.g. 'δL')
+            # with dr.resume_grad():
+            #     with dr.suspend_grad(pos, det, ray, weight):
+            #         L = dr.full(mi.Spectrum, 1.0, dr.width(ray))
+            #         dr.enable_grad(L)
+
+            #         splatting_and_backward_gradient_image(
+            #             value=L * weight,
+            #             weight=1.0,
+            #             alpha=1.0
+            #         )
+
+            #         δL = dr.grad(L)
+            δL = mi.ImageBlock(grad_in)
+
+            # # Clear the dummy data splatted on the film above
+            # film.clear()
+            block = film.create_block()
+
+            # Launch the Monte Carlo sampling process in primal mode (1)
+            L, valid, state_out = self.sample(
+                mode=dr.ADMode.Primal,
+                scene=scene,
+                sampler=sampler.clone(),
+                ray=ray,
+                block=block,
+                δL=None,
+                state_in=None,
+                active=mi.Bool(True)
+            )
+
+            # Launch Monte Carlo sampling in backward AD mode (2)
+            L_2, valid_2, state_out_2 = self.sample(
+                mode=dr.ADMode.Backward,
+                scene=scene,
+                sampler=sampler,
+                ray=ray,
+                block=block,
+                δL=δL,
+                state_in=state_out,
+                active=mi.Bool(True)
+            )
+
+            # Propagate gradient image to sample positions if necessary
+            # if reparam is not None:
+            #     with dr.resume_grad():
+            #         # Accumulate into the image block.
+            #         # After reparameterizing the camera ray, we need to evaluate
+            #         #   Σ (fi Li det)
+            #         #  ---------------
+            #         #   Σ (fi det)
+            #         splatting_and_backward_gradient_image(
+            #             value=L * weight * det,
+            #             weight=det,
+            #             alpha=dr.select(valid, mi.Float(1), mi.Float(0))
+            #         )
+
+            # We don't need any of the outputs here
+            del L_2, valid_2, state_out, state_out_2, δL, \
+                ray, weight, pos, sampler
+
+            gc.collect()
+
+            # Run kernel representing side effects of the above
+            dr.eval()
 
 mi.register_integrator("prb_acoustic", lambda props: PRBAcousticIntegrator(props))
