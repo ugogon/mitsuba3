@@ -78,10 +78,9 @@ public:
         Float scatter = dr::clamp(m_scatter->eval_1(si, active), 0.f, 1.f);
 
         UnpolarizedSpectrum reflectance = 1.f - m_absorpt->eval(si, active);
-        UnpolarizedSpectrum value_specular = reflectance * dr::select(reflect(si.wi) == wo, 1.f, 0.f);
         UnpolarizedSpectrum value_diffuse  = reflectance * dr::InvPi<Float> * cos_theta_o;
 
-        return (value_specular * (1.f - scatter) + (value_diffuse * scatter)) & active;
+        return (value_diffuse * scatter) & active;
     }
 
     Float pdf(const BSDFContext & /* ctx */, const SurfaceInteraction3f &si,
