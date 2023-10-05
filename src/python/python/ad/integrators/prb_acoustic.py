@@ -1,5 +1,5 @@
 from __future__ import annotations # Delayed parsing of type annotations
-from typing import Optional
+from typing import Optional, Tuple
 
 import drjit as dr
 import mitsuba as mi
@@ -203,6 +203,7 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         # Rendering a primal image? (vs performing forward/reverse-mode AD)
         primal = mode == dr.ADMode.Primal
+        assert primal or (δL is not None and state_in is not None)
 
         # Standard BSDF evaluation context for path tracing
         bsdf_ctx = mi.BSDFContext()
@@ -247,6 +248,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 si = scene.ray_intersect(ray,
                                          ray_flags=mi.RayFlags.All,
                                          coherent=dr.eq(depth, 0))
+
             distance += si.t
 
             # Get the BSDF, potentially computes texture-space differentials
@@ -306,16 +308,19 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # ---- Update loop variables based on current interaction -----
 
-            Le_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                (distance / max_distance) * block.size().y)
+            Le_active, Lr_dir_active = Le.x > 0.0, Lr_dir.x > 0.0
+
+            Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                    (distance / max_distance) * block.size().y)
             Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     (distance + dr.norm(ds.p - si.p)) / max_distance * block.size().y)
-            block.put(pos=Le_pos,
-                      values=mi.Vector2f(Le.x, mi.Float(1.0)),
-                      active=(Le.x > 0.0))
-            block.put(pos=Lr_dir_pos,
-                      values=mi.Vector2f(Lr_dir.x, mi.Float(1.0)),
-                      active=(Lr_dir.x > 0.0))
+
+            block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, mi.Float(1.0)),     active=Le_active)
+            block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, mi.Float(1.0)), active=Lr_dir_active)
+
+            if δL is not None:
+                Le     = Le     * δL.read(pos=Le_pos,     active=Le_active)[0]
+                Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos, active=Lr_dir_active)[0]
 
             L = (L + Le + Lr_dir) if primal else (L - Le - Lr_dir)
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo))
@@ -374,7 +379,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                     Lr_ind = L * dr.replace_grad(1, inv_bsdf_val_det * bsdf_val)
 
                     # Differentiable Monte Carlo estimate of all contributions
-                    Lo = Le + Lr_ind
+                    Lo = Le + Lr_dir + Lr_ind
 
                     if dr.flag(dr.JitFlag.VCallRecord) and not dr.grad_enabled(Lo):
                         raise Exception(
@@ -389,8 +394,7 @@ class PRBAcousticIntegrator(RBIntegrator):
 
                     # Propagate derivatives from/to 'Lo' based on 'mode'
                     if mode == dr.ADMode.Backward:
-                        dr.backward_from(δL.read(pos=Le_pos)[0]     * Lo)
-                        dr.backward_from(δL.read(pos=Lr_dir_pos)[0] * Lr_dir)
+                        dr.backward_from(Lo)
                     else:
                         raise Exception("Forward mode not supported")
                         # δL += dr.forward_to(Lo)
@@ -512,7 +516,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 sampler=sampler.clone(),
                 ray=ray,
                 block=block,
-                δL=None,
+                δL=δL,
                 state_in=None,
                 active=mi.Bool(True)
             )
