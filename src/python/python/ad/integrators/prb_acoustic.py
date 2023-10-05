@@ -319,8 +319,9 @@ class PRBAcousticIntegrator(RBIntegrator):
             block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, mi.Float(1.0)), active=Lr_dir_active)
 
             if δL is not None:
-                Le     = Le     * δL.read(pos=Le_pos,     active=Le_active)[0]
-                Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos, active=Lr_dir_active)[0]
+                with dr.resume_grad(when=not primal):
+                    Le     = Le     * δL.read(pos=Le_pos,     active=Le_active)[0]
+                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos, active=Lr_dir_active)[0]
 
             L = (L + Le + Lr_dir) if primal else (L - Le - Lr_dir)
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo))
