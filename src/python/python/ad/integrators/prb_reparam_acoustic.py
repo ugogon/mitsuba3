@@ -156,6 +156,8 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             with dr.resume_grad(when=not primal):
                 si_cur = pi_cur.compute_surface_interaction(ray_reparam)
 
+            distance += si_cur.t
+
             # ---------------------- Direct emission ----------------------
 
             # Hide the environment emitter if necessary
@@ -228,9 +230,9 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             Le_active, Lr_dir_active = Le.x > 0.0, Lr_dir.x > 0.0
 
             Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                    (distance / max_distance) * block.size().y)
+                                    block.size().y * distance / max_distance)
             Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                    (distance + dr.norm(ds.p - si_cur.p)) / max_distance * block.size().y)
+                                    block.size().y * (distance + dr.norm(ds.p - si_cur.p)) / max_distance)
 
             block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, mi.Float(1.0)),     active=Le_active)
             block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, mi.Float(1.0)), active=Lr_dir_active)
@@ -337,6 +339,17 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                     si_next.wi = si_next.to_local(wi_next)
                     Le_next = β * mis_em * \
                         si_next.emitter(scene).eval(si_next, active_next)
+
+                    dist_next = distance + si_next.t
+
+                    Le_n_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                            block.size().y * dist_next / max_distance)
+                    Lr_dir_n_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                            block.size().y *
+                                            (dist_next + dr.norm(si_cur_reparam_only.p - si_next.p)) / max_distance)
+
+                    Le_next     = Le_next     * δL.read(pos=Le_n_pos)[0]
+                    Lr_dir_next = Lr_dir_next * δL.read(pos=Lr_dir_n_pos)[0]
 
                     # Value of 'L' at the next vertex
                     L_next = L - dr.detach(Le_next) - dr.detach(Lr_dir_next)
