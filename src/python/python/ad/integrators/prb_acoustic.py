@@ -329,9 +329,9 @@ class PRBAcousticIntegrator(RBIntegrator):
             Le_active, Lr_dir_active = Le.x > 0.0, Lr_dir.x > 0.0
 
             Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                    (distance / max_distance) * block.size().y)
+                                    block.size().y * distance / max_distance)
             Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                    (distance + dr.norm(ds.p - si.p)) / max_distance * block.size().y)
+                                    block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
 
             block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, mi.Float(1.0)),     active=Le_active)
             block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, mi.Float(1.0)), active=Lr_dir_active)
