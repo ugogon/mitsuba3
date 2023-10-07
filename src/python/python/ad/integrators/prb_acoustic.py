@@ -60,6 +60,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 block=block,
                 δL=None,
                 state_in=None,
+                reparam=None,
                 active=mi.Bool(True)
             )
 
@@ -146,8 +147,26 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         reparam_det = 1.0
 
-        if reparam is not None:
-            raise Exception("Not implemented")
+        # TODO: needed?
+        # if reparam is not None:
+        #     with dr.resume_grad():
+        #         # Reparameterize the camera ray
+        #         reparam_d, reparam_det = reparam(ray=dr.detach(ray),
+        #                                          depth=mi.UInt32(0))
+
+        #         # TODO better understand why this is necessary
+        #         Reparameterize the camera ray to handle camera translations
+        #         if dr.grad_enabled(ray.o):
+        #             reparam_d, _ = reparam(ray=ray, depth=mi.UInt32(0))
+
+        #         # Create a fake interaction along the sampled ray and use it to
+        #         # recompute the position with derivative tracking
+        #         it = dr.zeros(mi.Interaction3f)
+        #         it.p = ray.o + reparam_d
+        #         ds, _ = sensor.sample_direction(it, aperture_sample)
+
+        #         # Return a reparameterized image position
+        #         pos_f = ds.uv + film.crop_offset()
 
         # With box filter, ignore random offset to prevent numerical instabilities
         splatting_pos = mi.Vector2f(pos) if rfilter.is_box_filter() else pos_f
@@ -198,8 +217,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                state_in: Optional[mi.Spectrum],
                active: mi.Bool,
                **_ # Absorbs unused arguments
-    ) -> Tuple[mi.Spectrum,
-               mi.Bool, mi.Spectrum]:
+    ) -> Tuple[mi.Spectrum, mi.Bool, mi.Spectrum]:
 
         # Rendering a primal image? (vs performing forward/reverse-mode AD)
         primal = mode == dr.ADMode.Primal
@@ -490,20 +508,6 @@ class PRBAcousticIntegrator(RBIntegrator):
                 dr.enqueue(dr.ADMode.Backward, image)
                 dr.traverse(mi.Float, dr.ADMode.Backward)
 
-            # # Differentiate sample splatting and weight division steps to
-            # # retrieve the adjoint radiance (e.g. 'δL')
-            # with dr.resume_grad():
-            #     with dr.suspend_grad(pos, det, ray, weight):
-            #         L = dr.full(mi.Spectrum, 1.0, dr.width(ray))
-            #         dr.enable_grad(L)
-
-            #         splatting_and_backward_gradient_image(
-            #             value=L * weight,
-            #             weight=1.0,
-            #             alpha=1.0
-            #         )
-
-            #         δL = dr.grad(L)
             δL = mi.ImageBlock(grad_in)
 
             # # Clear the dummy data splatted on the film above
@@ -511,7 +515,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             block = film.create_block()
 
             # Launch the Monte Carlo sampling process in primal mode (1)
-            L, valid, state_out = self.sample(
+            _, _, state_out = self.sample(
                 mode=dr.ADMode.Primal,
                 scene=scene,
                 sampler=sampler.clone(),
@@ -519,6 +523,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 block=block,
                 δL=δL,
                 state_in=None,
+                reparam=None,
                 active=mi.Bool(True)
             )
 
@@ -531,6 +536,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 block=block,
                 δL=δL,
                 state_in=state_out,
+                reparam=reparam,
                 active=mi.Bool(True)
             )
 
