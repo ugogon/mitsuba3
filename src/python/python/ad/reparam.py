@@ -82,15 +82,11 @@ def _sample_warp_field(scene: mi.Scene,
     omega_local.x[flip] = -omega_local.x
     omega_local.y[flip] = -omega_local.y
 
-    # TODO: What is the issue with mi.Ray3f(...)?
-    aux_ray = dr.zeros(mi.Ray3f)
-    aux_ray.o = ray.o
-    aux_ray.d = ray_frame.to_world(omega_local)
-    aux_ray.time = ray.time
-    # aux_ray = mi.Ray3f(
-    #     o = ray.o,
-    #     d = ray_frame.to_world(omega_local),
-    #     time = ray.time)
+    aux_ray = mi.Ray3f(
+        o = ray.o,
+        d = ray_frame.to_world(omega_local),
+        time = ray.time)
+    aux_ray.wavelengths = ray.wavelengths
 
     # Compute an intersection that follows the intersected shape. For example,
     # a perturbation of the translation parameter will propagate to 'si.p'.
