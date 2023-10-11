@@ -1,11 +1,11 @@
 from __future__ import annotations # Delayed parsing of type annotations
-from typing import Optional, Tuple, Callable
+from typing import Optional, Tuple, Callable, Any
 
 import drjit as dr
 import mitsuba as mi
 import gc
 
-from .common import ADIntegrator, _ReparamWrapper, mis_weight
+from .common import mis_weight
 from .prb_acoustic import PRBAcousticIntegrator
 
 class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
@@ -107,7 +107,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
         # TODO: loop should keep track of imageblock and δL
         loop = mi.Loop(name="PRB Reparam Acoustic (%s)" % mode.name,
                        state=lambda: (distance, #block.tensor(),
-                                      sampler, depth, L, #δL.tesnor(),
+                                      sampler, depth, L, #δL.tensor(),
                                       β, η, mis_em, active,
                                       ray_prev, ray_cur, pi_prev, pi_cur, reparam))
 

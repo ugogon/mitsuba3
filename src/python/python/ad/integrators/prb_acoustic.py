@@ -105,24 +105,9 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         # Compute the position on the image plane
         pos = mi.Vector2i(0, 0)
-        # pos = mi.Vector2i(dr.meshgrid(
-        #     dr.arange(mi.Int32, film_size.x),
-        #     dr.arange(mi.Int32, film_size.y),
-        # ))
-        # pos.y = idx // film_size[0]
-        # pos.x = dr.fma(-film_size[0], pos.y, idx)
-
-        # if film.sample_border():
-        #     pos -= border_size
-
-        # pos += mi.Vector2i(film.crop_offset())
 
         # Cast to floating point and add random offset
         pos_f = mi.Vector2f(pos) # + sampler.next_2d()
-
-        # Re-scale the position to [0, 1]^2
-        # scale = dr.rcp(mi.ScalarVector2f(film.crop_size()))
-        # offset = -mi.ScalarVector2f(film.crop_offset()) * scale
         pos_adjusted = pos # dr.fma(pos_f, scale, offset)
 
         aperture_sample = mi.Vector2f(0.0)
@@ -130,8 +115,6 @@ class PRBAcousticIntegrator(RBIntegrator):
             aperture_sample = sampler.next_2d()
 
         time = 0.0 # sensor.shutter_open()
-        # if sensor.shutter_open_time() > 0:
-        #     time += sampler.next_1d() * sensor.shutter_open_time()
 
         wavelength_sample = 0.
         if mi.is_spectral:
@@ -147,26 +130,10 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         reparam_det = 1.0
 
-        # TODO: needed?
         if reparam is not None:
             with dr.resume_grad():
                 # Reparameterize the camera ray
                 _, reparam_det = reparam(ray=dr.detach(ray), depth=mi.UInt32(0))
-                # reparam_d, reparam_det = reparam(ray=dr.detach(ray), depth=mi.UInt32(0))
-
-                # TODO better understand why this is necessary
-                # Reparameterize the camera ray to handle camera translations
-                # if dr.grad_enabled(ray.o):
-                #     reparam_d, _ = reparam(ray=ray, depth=mi.UInt32(0))
-
-                # # Create a fake interaction along the sampled ray and use it to
-                # # recompute the position with derivative tracking
-                # it = dr.zeros(mi.Interaction3f)
-                # it.p = ray.o + reparam_d
-                # ds, _ = sensor.sample_direction(it, aperture_sample)
-
-                # # Return a reparameterized image position
-                # pos_f = ds.uv + film.crop_offset()
 
         # With box filter, ignore random offset to prevent numerical instabilities
         splatting_pos = mi.Vector2f(pos) if rfilter.is_box_filter() else pos_f
@@ -518,9 +485,8 @@ class PRBAcousticIntegrator(RBIntegrator):
                     dr.backward(L * weight * det * dr.rcp(dr.sum(det)))
 
             # We don't need any of the outputs here
-            # TODO: det
             del L, L_2, valid, valid_2, state_out, state_out_2, δL, \
-                ray, weight, pos, sampler
+                ray, weight, pos, det, sampler
 
             gc.collect()
 
