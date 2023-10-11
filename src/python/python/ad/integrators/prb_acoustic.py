@@ -1,5 +1,5 @@
 from __future__ import annotations # Delayed parsing of type annotations
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Callable, Any, Union
 
 import drjit as dr
 import mitsuba as mi
@@ -148,25 +148,25 @@ class PRBAcousticIntegrator(RBIntegrator):
         reparam_det = 1.0
 
         # TODO: needed?
-        # if reparam is not None:
-        #     with dr.resume_grad():
-        #         # Reparameterize the camera ray
-        #         reparam_d, reparam_det = reparam(ray=dr.detach(ray),
-        #                                          depth=mi.UInt32(0))
+        if reparam is not None:
+            with dr.resume_grad():
+                # Reparameterize the camera ray
+                _, reparam_det = reparam(ray=dr.detach(ray), depth=mi.UInt32(0))
+                # reparam_d, reparam_det = reparam(ray=dr.detach(ray), depth=mi.UInt32(0))
 
-        #         # TODO better understand why this is necessary
-        #         Reparameterize the camera ray to handle camera translations
-        #         if dr.grad_enabled(ray.o):
-        #             reparam_d, _ = reparam(ray=ray, depth=mi.UInt32(0))
+                # TODO better understand why this is necessary
+                # Reparameterize the camera ray to handle camera translations
+                # if dr.grad_enabled(ray.o):
+                #     reparam_d, _ = reparam(ray=ray, depth=mi.UInt32(0))
 
-        #         # Create a fake interaction along the sampled ray and use it to
-        #         # recompute the position with derivative tracking
-        #         it = dr.zeros(mi.Interaction3f)
-        #         it.p = ray.o + reparam_d
-        #         ds, _ = sensor.sample_direction(it, aperture_sample)
+                # # Create a fake interaction along the sampled ray and use it to
+                # # recompute the position with derivative tracking
+                # it = dr.zeros(mi.Interaction3f)
+                # it.p = ray.o + reparam_d
+                # ds, _ = sensor.sample_direction(it, aperture_sample)
 
-        #         # Return a reparameterized image position
-        #         pos_f = ds.uv + film.crop_offset()
+                # # Return a reparameterized image position
+                # pos_f = ds.uv + film.crop_offset()
 
         # With box filter, ignore random offset to prevent numerical instabilities
         splatting_pos = mi.Vector2f(pos) if rfilter.is_box_filter() else pos_f
@@ -433,6 +433,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                        sensor: Union[int, mi.Sensor] = 0,
                        seed: int = 0,
                        spp: int = 0) -> mi.TensorXf:
+        # TODO
         raise Exception("Not implemented")
 
     def render_backward(self: mi.SamplingIntegrator,
@@ -473,41 +474,6 @@ class PRBAcousticIntegrator(RBIntegrator):
             ray, weight, pos, det = self.sample_rays(scene, sensor,
                                                      sampler, reparam)
 
-            def splatting_and_backward_gradient_image(value: mi.Spectrum,
-                                                      weight: mi.Float,
-                                                      alpha: mi.Float):
-                '''
-                Backward propagation of the gradient image through the sample
-                splatting and weight division steps.
-                '''
-
-                # Prepare an ImageBlock as specified by the film
-                block = film.create_block()
-
-                # Only use the coalescing feature when rendering enough samples
-                block.set_coalesce(block.coalesce() and spp >= 4)
-
-                ADIntegrator._splat_to_block(
-                    block, film, pos,
-                    value=value,
-                    weight=weight,
-                    alpha=alpha,
-                    wavelengths=ray.wavelengths
-                )
-
-                film.put_block(block)
-
-                # Probably a little overkill, but why not.. If there are any
-                # DrJit arrays to be collected by Python's cyclic GC, then
-                # freeing them may enable loop simplifications in dr.eval().
-                gc.collect()
-
-                image = film.develop()
-
-                dr.set_grad(image, grad_in)
-                dr.enqueue(dr.ADMode.Backward, image)
-                dr.traverse(mi.Float, dr.ADMode.Backward)
-
             δL = mi.ImageBlock(grad_in)
 
             # # Clear the dummy data splatted on the film above
@@ -515,7 +481,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             block = film.create_block()
 
             # Launch the Monte Carlo sampling process in primal mode (1)
-            _, _, state_out = self.sample(
+            L, valid, state_out = self.sample(
                 mode=dr.ADMode.Primal,
                 scene=scene,
                 sampler=sampler.clone(),
@@ -541,21 +507,19 @@ class PRBAcousticIntegrator(RBIntegrator):
             )
 
             # Propagate gradient image to sample positions if necessary
-            # if reparam is not None:
-            #     with dr.resume_grad():
-            #         # Accumulate into the image block.
-            #         # After reparameterizing the camera ray, we need to evaluate
-            #         #   Σ (fi Li det)
-            #         #  ---------------
-            #         #   Σ (fi det)
-            #         splatting_and_backward_gradient_image(
-            #             value=L * weight * det,
-            #             weight=det,
-            #             alpha=dr.select(valid, mi.Float(1), mi.Float(0))
-            #         )
+            if reparam is not None:
+                with dr.resume_grad():
+                    # Accumulate into the image block.
+                    # After reparameterizing the camera ray, we need to evaluate
+                    #   Σ (fi Li det)
+                    #  ---------------
+                    #   Σ (fi det)
+                    L[~valid] = 0.0
+                    dr.backward(L * weight * det * dr.rcp(dr.sum(det)))
 
             # We don't need any of the outputs here
-            del L_2, valid_2, state_out, state_out_2, δL, \
+            # TODO: det
+            del L, L_2, valid, valid_2, state_out, state_out_2, δL, \
                 ray, weight, pos, sampler
 
             gc.collect()
