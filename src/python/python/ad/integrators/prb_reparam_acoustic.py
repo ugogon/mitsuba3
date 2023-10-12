@@ -234,10 +234,10 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * (distance + dr.norm(ds.p - si_cur.p)) / max_distance)
 
-            block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, mi.Float(1.0)),     active=Le_active)
-            block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, mi.Float(1.0)), active=Lr_dir_active)
+            block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, 1.0),     active=Le_active)
+            block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=Lr_dir_active)
 
-            if δL is not None:
+            if δL is not None and mode != dr.ADMode.Forward:
                 with dr.resume_grad(when=not primal):
                     Le     = Le     * δL.read(pos=Le_pos,     active=Le_active)[0]
                     Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos, active=Lr_dir_active)[0]
@@ -365,15 +365,6 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                     extra[si_next.is_valid()] += L_next * bsdf_val_next / dr.maximum(1e-8, dr.detach(bsdf_val_next))
 
                 with dr.resume_grad():
-                    # 'L' stores the indirectly reflected radiance at the
-                    # current vertex but does not track parameter derivatives.
-                    # The following addresses this by canceling the detached
-                    # BSDF value and replacing it with an equivalent term that
-                    # has derivative tracking enabled. (nit picking: the
-                    # direct/indirect terminology isn't 100% accurate here,
-                    # since there may be a direct component that is weighted
-                    # via multiple importance sampling)
-
                     # Recompute 'wo' to propagate derivatives to cosine term
                     wo = si_cur.to_local(ray_next.d)
 
@@ -385,9 +376,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                     inv_bsdf_val_detach = dr.select(dr.neq(bsdf_val_detach, 0),
                                                     dr.rcp(bsdf_val_detach), 0)
 
-                    # Differentiable version of the reflected indirect
-                    # radiance. Minor optional tweak: indicate that the primal
-                    # value of the second term is always 1.
+                    # Differentiable version of the reflected indirect radiance
                     Lr_ind = L * dr.replace_grad(1, inv_bsdf_val_detach * bsdf_val)
 
                 with dr.resume_grad():
@@ -409,8 +398,12 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                     if mode == dr.ADMode.Backward:
                         dr.backward_from(Lo)
                     else:
-                        raise Exception("Forward mode not supported")
-                        # δL += dr.forward_to(Lo)
+                        if dr.grad_enabled(Le) or dr.grad_enabled(Lr_ind):
+                            δL.put(pos=Le_pos,
+                                   values=mi.Vector2f(dr.forward_to(Le + Lr_ind).x, 1.0))
+                        if dr.grad_enabled(Lr_dir):
+                            δL.put(pos=Lr_dir_pos,
+                                   values=mi.Vector2f(dr.forward_to(Lr_dir).x, 1.0))
 
             # Differential phases need access to the previous interaction, too
             if not primal:
