@@ -340,16 +340,17 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                     Le_next = β * mis_em * \
                         si_next.emitter(scene).eval(si_next, active_next)
 
-                    dist_next = distance + si_next.t
+                    if mode != dr.ADMode.Forward:
+                        dist_next = distance + si_next.t
 
-                    Le_n_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                            block.size().y * dist_next / max_distance)
-                    Lr_dir_n_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                            block.size().y *
-                                            (dist_next + dr.norm(si_cur_reparam_only.p - si_next.p)) / max_distance)
+                        Le_n_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                                block.size().y * dist_next / max_distance)
+                        Lr_dir_n_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                                block.size().y *
+                                                (dist_next + dr.norm(si_cur_reparam_only.p - si_next.p)) / max_distance)
 
-                    Le_next     = Le_next     * δL.read(pos=Le_n_pos)[0]
-                    Lr_dir_next = Lr_dir_next * δL.read(pos=Lr_dir_n_pos)[0]
+                        Le_next     = Le_next     * δL.read(pos=Le_n_pos)[0]
+                        Lr_dir_next = Lr_dir_next * δL.read(pos=Lr_dir_n_pos)[0]
 
                     # Value of 'L' at the next vertex
                     L_next = L - dr.detach(Le_next) - dr.detach(Lr_dir_next)
