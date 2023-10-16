@@ -5,7 +5,9 @@
 #include <mitsuba/render/texture.h>
 #include <mitsuba/render/fresnel.h>
 
-// TODO: maybe use blendbsdf with diffuse and conductor and scattering as weight
+/*
+ * Alternatively use blendbsf together with diffuse bsdf, conductor bsdf and weight set to scattering
+*/
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -54,14 +56,13 @@ public:
         Float cos_theta_i = Frame3f::cos_theta(si.wi);
         active &= cos_theta_i > 0.f;
 
-        Float scatter = dr::clamp(m_scatter->eval_1(si, active), 0.f, 1.f);
+        Float scatter = dr::clamp(m_scatter->eval(si, active).x(), 0.f, 1.f);
         Mask scatter_sample = sample1 > scatter;
 
         BSDFSample3f bs = dr::zeros<BSDFSample3f>();
         dr::masked(bs, active && scatter_sample)  = bs_specular;
         dr::masked(bs, active && !scatter_sample) = bs_diffuse;
 
-        // TODO: eval_1(...) instead of eval(...) ?
         UnpolarizedSpectrum reflectance = 1.f - m_absorpt->eval(si, active);
 
         return { bs, reflectance & (active && bs.pdf > 0.f) };
@@ -75,7 +76,7 @@ public:
               cos_theta_o = Frame3f::cos_theta(wo);
         active &= cos_theta_i > 0.f && cos_theta_o > 0.f;
 
-        Float scatter = dr::clamp(m_scatter->eval_1(si, active), 0.f, 1.f);
+        Float scatter = dr::clamp(m_scatter->eval(si, active).x(), 0.f, 1.f);
 
         UnpolarizedSpectrum reflectance = 1.f - m_absorpt->eval(si, active);
         UnpolarizedSpectrum value_diffuse  = reflectance * dr::InvPi<Float> * cos_theta_o;
@@ -92,7 +93,7 @@ public:
 
         active &= cos_theta_i > 0.f && cos_theta_o > 0.f;
 
-        Float scatter = dr::clamp(m_scatter->eval_1(si, active), 0.f, 1.f);
+        Float scatter = dr::clamp(m_scatter->eval(si, active).x(), 0.f, 1.f);
         Float pdf_diffuse = warp::square_to_cosine_hemisphere_pdf(wo);
 
         return dr::select(active, pdf_diffuse * scatter, 0.f);
@@ -109,7 +110,7 @@ public:
 
         active &= cos_theta_i > 0.f && cos_theta_o > 0.f;
 
-        Float scatter = dr::clamp(m_scatter->eval_1(si, active), 0.f, 1.f);
+        Float scatter = dr::clamp(m_scatter->eval(si, active).x(), 0.f, 1.f);
 
         Float pdf_diffuse = warp::square_to_cosine_hemisphere_pdf(wo);
 
