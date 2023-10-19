@@ -36,8 +36,12 @@ public:
         m_skip_direct       = props.get<bool>("skip_direct", false);
         m_emitter_terminate = props.get<bool>("emitter_terminate", false);
 
-        // deactive russian roulette sampling by default
-        m_rr_depth = m_max_depth + 1;
+        // Depth to begin using russian roulette
+        int rr_depth = props.get<int>("rr_depth", m_max_depth + 1);
+        if (rr_depth <= 0)
+            Throw("\"rr_depth\" must be set to a value greater than zero!");
+
+        m_rr_depth = (uint32_t) rr_depth;
     }
 
     TensorXf render(Scene *scene,
@@ -439,7 +443,8 @@ public:
             throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
 
             active = active_next && (!rr_active || rr_continue) &&
-                     dr::neq(throughput_max, 0.f);
+                     dr::neq(throughput_max, 0.f) &&
+                     distance <= max_distance;
         }
 
         return {
@@ -456,7 +461,7 @@ public:
         oss << "AcousticPathIntegrator["
             <<  "\n  stop = "            << m_stop
             << ",\n  max_depth = "       << m_max_depth
-            // << ",\n  wavelength_bins = " << m_wavelength_bins
+            << ",\n  rr_depth = "       << m_rr_depth
             <<  "\n]";
         return oss.str();
     }

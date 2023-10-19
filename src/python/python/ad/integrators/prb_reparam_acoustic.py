@@ -252,6 +252,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             # Don't run another iteration if the throughput has reached zero
             β_max = dr.max(β)
             active_next &= dr.neq(β_max, 0)
+            active_next &= distance <= max_distance
 
             # Russian roulette stopping probability (must cancel out ior^2
             # to obtain unitless throughput, enforces a minimum probability)
