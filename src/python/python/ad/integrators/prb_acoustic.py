@@ -16,7 +16,9 @@ class PRBAcousticIntegrator(RBIntegrator):
         if self.max_time <= 0. or self.sound_speed <= 0.:
             raise Exception("\"max_time\" and \"sound_speed\" must be set to a value greater than zero!")
 
-        self.rr_depth = self.max_depth + 1
+        self.rr_depth = props.get('rr_depth', self.max_depth + 1)
+        if self.rr_depth <= 0:
+            raise Exception("\"rr_depth\" must be set to a value greater than zero!")
 
     def render(self: mi.SamplingIntegrator,
                scene: mi.Scene,
@@ -317,6 +319,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             # Don't run another iteration if the throughput has reached zero
             β_max = dr.max(β)
             active_next &= dr.neq(β_max, 0)
+            active_next &= distance <= max_distance
 
             # Russian roulette stopping probability (must cancel out ior^2
             # to obtain unitless throughput, enforces a minimum probability)
