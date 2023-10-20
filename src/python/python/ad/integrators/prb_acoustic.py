@@ -48,7 +48,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             )
 
             # Generate a set of rays starting at the sensor
-            ray, weight, pos, _ = self.sample_rays(scene, sensor, sampler)
+            ray, weight, _, _ = self.sample_rays(scene, sensor, sampler)
 
             # Prepare an ImageBlock as specified by the film
             block = film.create_block()
@@ -67,7 +67,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             )
 
             # Explicitly delete any remaining unused variables
-            del sampler, ray, weight, pos #, L, valid
+            del sampler, ray, weight#, pos, L, valid
             gc.collect()
 
             # Perform the weight division and return an image tensor
@@ -106,7 +106,11 @@ class PRBAcousticIntegrator(RBIntegrator):
             idx //= dr.opaque(mi.UInt32, spp)
 
         # Compute the position on the image plane
-        pos = mi.Vector2f(0.0, 0.0)
+        pos = mi.Vector2i(idx, 0 * idx)
+
+        # Re-scale the position to [0, 1]^2
+        scale = dr.rcp(mi.ScalarVector2f(film_size))
+        pos_adjusted = mi.Vector2f(pos) * scale
 
         aperture_sample = mi.Vector2f(0.0)
         if sensor.needs_aperture_sample():
@@ -122,7 +126,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             ray, weight = sensor.sample_ray_differential(
                 time=time,
                 sample1=wavelength_sample,
-                sample2=pos,
+                sample2=pos_adjusted,
                 sample3=aperture_sample
             )
 
@@ -416,7 +420,7 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # Generate a set of rays starting at the sensor, keep track of
             # derivatives wrt. sample positions ('pos') if there are any
-            ray, weight, pos, det = self.sample_rays(scene, sensor,
+            ray, weight, _, det = self.sample_rays(scene, sensor,
                                                      sampler, reparam)
 
             # Launch the Monte Carlo sampling process in primal mode (1)
@@ -461,8 +465,8 @@ class PRBAcousticIntegrator(RBIntegrator):
             film.put_block(δL)
 
             # Explicitly delete any remaining unused variables
-            del sampler, ray, weight, pos, L, valid, δL, valid_2, params, \
-                state_out, state_out_2
+            del sampler, ray, weight, L, valid, δL, valid_2, params, \
+                state_out, state_out_2 #, pos
 
             # Probably a little overkill, but why not.. If there are any
             # DrJit arrays to be collected by Python's cyclic GC, then
@@ -513,7 +517,7 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # Generate a set of rays starting at the sensor, keep track of
             # derivatives wrt. sample positions ('pos') if there are any
-            ray, weight, pos, det = self.sample_rays(scene, sensor,
+            ray, weight, _, det = self.sample_rays(scene, sensor,
                                                      sampler, reparam)
 
             δL = mi.ImageBlock(grad_in)
@@ -561,7 +565,7 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # We don't need any of the outputs here
             del L, L_2, valid, valid_2, state_out, state_out_2, δL, \
-                ray, weight, pos, det, sampler
+                ray, weight, det, sampler #, pos
 
             gc.collect()
 
