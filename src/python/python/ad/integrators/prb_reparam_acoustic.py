@@ -95,6 +95,9 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
         mis_em = mi.Float(1)                          # Emitter MIS weight
         active = mi.Bool(active)                      # Active SIMD lanes
 
+        if self.skip_direct:
+            mis_em = mi.Float(0.)
+
         # Initialize loop state variables caching the rays and preliminary
         # intersections of the previous (zero-initialized) and current vertex
         ray_prev = dr.zeros(mi.Ray3f)
