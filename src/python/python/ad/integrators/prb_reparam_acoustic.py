@@ -85,7 +85,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
         # --------------------- Configure loop state ----------------------
 
         distance     = mi.Float(0.0)
-        max_distance = self.max_time * self.sound_speed
+        max_distance = self.max_time * self.speed_of_sound
 
         # Copy input arguments to avoid mutating the caller's state
         depth = mi.UInt32(0)                          # Depth of current vertex

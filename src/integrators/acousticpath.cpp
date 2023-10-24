@@ -29,9 +29,9 @@ public:
 
     AcousticPathIntegrator(const Properties &props) : Base(props) {
         m_max_time    = props.get<float>("max_time", 1.f);
-        m_sound_speed = props.get<float>("sound_speed", 343.f);
-        if (m_max_time <= 0.f || m_sound_speed <= 0.f)
-            Throw("\"max_time\" and \"sound_speed\" must be set to a value greater than zero!");
+        m_speed_of_sound = props.get<float>("speed_of_sound", 343.f);
+        if (m_max_time <= 0.f || m_speed_of_sound <= 0.f)
+            Throw("\"max_time\" and \"speed_of_sound\" must be set to a value greater than zero!");
 
         m_skip_direct       = props.get<bool>("skip_direct", false);
         m_emitter_terminate = props.get<bool>("emitter_terminate", false);
@@ -271,7 +271,7 @@ public:
         Float eta                      = 1.f;
         UInt32 depth                   = 0;
         Float distance                 = 0.f;
-        const ScalarFloat max_distance = m_max_time * m_sound_speed;
+        const ScalarFloat max_distance = m_max_time * m_speed_of_sound;
 
         // If m_hide_emitters == false, the environment emitter will be visible
         Mask valid_ray                 = !m_hide_emitters && dr::neq(scene->environment(), nullptr);
@@ -515,7 +515,7 @@ protected:
 
 protected:
     float m_max_time;
-    float m_sound_speed;
+    float m_speed_of_sound;
 
     bool m_skip_direct;
     bool m_emitter_terminate;
