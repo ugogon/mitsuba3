@@ -425,4 +425,9 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             L                    # State for the differential phase
         )
 
+    def to_string(self):
+        return f'{type(self).__name__}[max_depth = {self.max_depth},' \
+               f' rr_depth = { self.rr_depth },' \
+               f' reparam_rays = { self.reparam_rays }]'
+
 mi.register_integrator("prb_reparam_acoustic", lambda props: PRBReparamAcousticIntegrator(props))
