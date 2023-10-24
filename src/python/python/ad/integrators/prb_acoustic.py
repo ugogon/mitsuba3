@@ -12,9 +12,9 @@ class PRBAcousticIntegrator(RBIntegrator):
         super().__init__(props)
 
         self.max_time    = props.get("max_time", 1.)
-        self.sound_speed = props.get("sound_speed", 343.)
-        if self.max_time <= 0. or self.sound_speed <= 0.:
-            raise Exception("\"max_time\" and \"sound_speed\" must be set to a value greater than zero!")
+        self.speed_of_sound = props.get("speed_of_sound", 343.)
+        if self.max_time <= 0. or self.speed_of_sound <= 0.:
+            raise Exception("\"max_time\" and \"speed_of_sound\" must be set to a value greater than zero!")
 
         self.rr_depth = props.get('rr_depth', self.max_depth + 1)
         if self.rr_depth <= 0:
@@ -195,7 +195,7 @@ class PRBAcousticIntegrator(RBIntegrator):
         # --------------------- Configure loop state ----------------------
 
         distance     = mi.Float(0.0)
-        max_distance = self.max_time * self.sound_speed
+        max_distance = self.max_time * self.speed_of_sound
 
         # Copy input arguments to avoid mutating the caller's state
         ray = mi.Ray3f(dr.detach(ray))
