@@ -16,6 +16,8 @@ class PRBAcousticIntegrator(RBIntegrator):
         if self.max_time <= 0. or self.speed_of_sound <= 0.:
             raise Exception("\"max_time\" and \"speed_of_sound\" must be set to a value greater than zero!")
 
+        self.skip_direct = props.get("skip_direct", False)
+
         self.rr_depth = props.get('rr_depth', self.max_depth + 1)
         if self.rr_depth <= 0:
             raise Exception("\"rr_depth\" must be set to a value greater than zero!")
@@ -207,7 +209,7 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         # Variables caching information from the previous bounce
         prev_si         = dr.zeros(mi.SurfaceInteraction3f)
-        prev_bsdf_pdf   = mi.Float(1.0)
+        prev_bsdf_pdf   = mi.Float(0.) if self.skip_direct else mi.Float(1.)
         prev_bsdf_delta = mi.Bool(True)
 
         # Record the following loop in its entirety
