@@ -34,7 +34,6 @@ public:
             Throw("\"max_time\" and \"speed_of_sound\" must be set to a value greater than zero!");
 
         m_skip_direct       = props.get<bool>("skip_direct", false);
-        m_emitter_terminate = props.get<bool>("emitter_terminate", false);
 
         int max_depth = props.get<int>("max_depth", -1);
         if (max_depth < 0 && max_depth != -1)
@@ -43,7 +42,7 @@ public:
         m_max_depth = (uint32_t) max_depth; // This maps -1 to 2^32-1 bounces
 
         // Depth to begin using russian roulette
-        int rr_depth = props.get<int>("rr_depth", m_max_depth + 1);
+        int rr_depth = props.get<int>("rr_depth", m_max_depth);
         if (rr_depth <= 0)
             Throw("\"rr_depth\" must be set to a value greater than zero!");
 
@@ -345,9 +344,7 @@ public:
 
             // Continue tracing the path at this point?
             Bool active_next = (depth + 1 < m_max_depth)
-                && si.is_valid()
-                && distance <= max_distance
-                && !(m_emitter_terminate && hit_emitter); // if m_emitter_terminate = true a ray stops after hitting a emitter
+                && si.is_valid() && distance <= max_distance;
 
             if (dr::none_or<false>(active_next))
                 break; // early exit for scalar mode
@@ -524,7 +521,6 @@ protected:
     float m_speed_of_sound;
 
     bool m_skip_direct;
-    bool m_emitter_terminate;
 };
 
 MI_IMPLEMENT_CLASS_VARIANT(AcousticPathIntegrator, MonteCarloIntegrator)
