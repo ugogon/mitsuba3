@@ -36,6 +36,12 @@ public:
         m_skip_direct       = props.get<bool>("skip_direct", false);
         m_emitter_terminate = props.get<bool>("emitter_terminate", false);
 
+        int max_depth = props.get<int>("max_depth", -1);
+        if (max_depth < 0 && max_depth != -1)
+            Throw("\"max_depth\" must be set to -1 (infinite) or a value >= 0");
+
+        m_max_depth = (uint32_t) max_depth; // This maps -1 to 2^32-1 bounces
+
         // Depth to begin using russian roulette
         int rr_depth = props.get<int>("rr_depth", m_max_depth + 1);
         if (rr_depth <= 0)
