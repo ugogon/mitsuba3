@@ -301,20 +301,19 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # ---- Update loop variables based on current interaction -----
 
-            Le_active, Lr_dir_active = Le.x > 0.0, Lr_dir.x > 0.0
-
             Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * distance / max_distance)
             Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
 
-            block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, 1.0),     active=Le_active)
-            block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=Lr_dir_active)
+            if primal:
+                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, 1.0),     active=(Le.x > 0.))
+                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.0))
 
             if δL is not None and mode != dr.ADMode.Forward:
                 with dr.resume_grad(when=not primal):
-                    Le     = Le     * δL.read(pos=Le_pos,     active=Le_active)[0]
-                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos, active=Lr_dir_active)[0]
+                    Le     = Le     * δL.read(pos=Le_pos)[0]
+                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos)[0]
 
             L = (L + Le + Lr_dir) if primal else (L - Le - Lr_dir)
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo))
@@ -402,6 +401,8 @@ class PRBAcousticIntegrator(RBIntegrator):
                        sensor: Union[int, mi.Sensor] = 0,
                        seed: int = 0,
                        spp: int = 0) -> mi.TensorXf:
+        raise Exception("Forward mode is currently biased and not correct")
+
         if isinstance(sensor, int):
             sensor = scene.sensors()[sensor]
 
