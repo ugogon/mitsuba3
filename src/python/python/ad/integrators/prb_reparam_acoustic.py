@@ -3,7 +3,6 @@ from typing import Optional, Tuple, Callable, Any
 
 import drjit as dr
 import mitsuba as mi
-import gc
 
 from .common import mis_weight
 from .prb_acoustic import PRBAcousticIntegrator
@@ -230,20 +229,19 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
 
             # ---- Update loop variables based on current interaction -----
 
-            Le_active, Lr_dir_active = Le.x > 0.0, Lr_dir.x > 0.0
-
             Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * distance / max_distance)
             Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * (distance + dr.norm(ds.p - si_cur.p)) / max_distance)
 
-            block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, 1.0),     active=Le_active)
-            block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=Lr_dir_active)
+            if primal:
+                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, 1.0),     active=(Le.x > 0.))
+                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.0))
 
             if δL is not None and mode != dr.ADMode.Forward:
                 with dr.resume_grad(when=not primal):
-                    Le     = Le     * δL.read(pos=Le_pos,     active=Le_active)[0]
-                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos, active=Lr_dir_active)[0]
+                    Le     = Le     * δL.read(pos=Le_pos)[0]
+                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos)[0]
 
             η     *= bsdf_sample.eta
             β     *= bsdf_weight
