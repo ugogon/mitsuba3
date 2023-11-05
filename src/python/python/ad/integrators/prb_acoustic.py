@@ -301,21 +301,6 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # ---- Update loop variables based on current interaction -----
 
-            Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                    block.size().y * distance / max_distance)
-            Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                    block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
-
-            if primal:
-                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, 1.0),     active=(Le.x > 0.))
-                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.0))
-
-            if δL is not None and mode != dr.ADMode.Forward:
-                with dr.resume_grad(when=not primal):
-                    Le     = Le     * δL.read(pos=Le_pos)[0]
-                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos)[0]
-
-            L = (L + Le + Lr_dir) if primal else (L - Le - Lr_dir)
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo))
             η *= bsdf_sample.eta
             β *= bsdf_weight
@@ -325,6 +310,26 @@ class PRBAcousticIntegrator(RBIntegrator):
             prev_si = dr.detach(si, True)
             prev_bsdf_pdf = bsdf_sample.pdf
             prev_bsdf_delta = mi.has_flag(bsdf_sample.sampled_type, mi.BSDFFlags.Delta)
+
+            # put and accumulate current (differential) radiance
+
+            Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                    block.size().y * distance / max_distance)
+            Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                    block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
+
+            if primal:
+                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x,     1.0), active=(Le.x     > 0.))
+                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.))
+                L = L + Le + Lr_dir
+            elif mode == dr.ADMode.Forward:
+                δL.put(pos=Le_pos,     values=mi.Vector2f((L * Le    ).x, 1.0))
+                δL.put(pos=Lr_dir_pos, values=mi.Vector2f((L * Lr_dir).x, 1.0))
+            elif mode == dr.ADMode.Backward:
+                with dr.resume_grad(when=not primal):
+                    Le     = Le     * δL.read(pos=Le_pos)[0]
+                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos)[0]
+                L = (L - Le - Lr_dir)
 
             # -------------------- Stopping criterion ---------------------
 
@@ -359,10 +364,10 @@ class PRBAcousticIntegrator(RBIntegrator):
                                                  dr.rcp(bsdf_val_det), 0)
 
                     # Differentiable version of the reflected indirect radiance
-                    Lr_ind = L * dr.replace_grad(1, inv_bsdf_val_det * bsdf_val)
+                    Lr_ind = dr.replace_grad(1, inv_bsdf_val_det * bsdf_val)
 
                     # Differentiable Monte Carlo estimate of all contributions
-                    Lo = Le + Lr_dir + Lr_ind
+                    Lo = Le + Lr_dir + L * Lr_ind
 
                     if dr.flag(dr.JitFlag.VCallRecord) and not dr.grad_enabled(Lo):
                         raise Exception(
@@ -379,12 +384,14 @@ class PRBAcousticIntegrator(RBIntegrator):
                     if mode == dr.ADMode.Backward:
                         dr.backward_from(Lo)
                     else:
-                        if dr.grad_enabled(Le) or dr.grad_enabled(Lr_ind):
+                        if dr.grad_enabled(Le):
                             δL.put(pos=Le_pos,
-                                   values=mi.Vector2f(dr.forward_to(Le + Lr_ind).x, 1.0))
+                                   values=mi.Vector2f(dr.forward_to(Le).x, 1.0))
                         if dr.grad_enabled(Lr_dir):
                             δL.put(pos=Lr_dir_pos,
                                    values=mi.Vector2f(dr.forward_to(Lr_dir).x, 1.0))
+                        if dr.grad_enabled(Lr_ind):
+                            L = L + dr.forward_to(Lr_ind)
 
             depth[si.is_valid()] += 1
             active = active_next
@@ -401,7 +408,10 @@ class PRBAcousticIntegrator(RBIntegrator):
                        sensor: Union[int, mi.Sensor] = 0,
                        seed: int = 0,
                        spp: int = 0) -> mi.TensorXf:
-        raise Exception("Forward mode is currently biased and not correct")
+
+        mi.Log(mi.LogLevel.Warn,
+               "Acoustic Forward Mode is untested and probably "
+               "biased, especially when using reparam!")
 
         if isinstance(sensor, int):
             sensor = scene.sensors()[sensor]
@@ -433,28 +443,14 @@ class PRBAcousticIntegrator(RBIntegrator):
             ray, weight, _, det = self.sample_rays(scene, sensor,
                                                      sampler, reparam)
 
-            # Launch the Monte Carlo sampling process in primal mode (1)
-            L, valid, state_out = self.sample(
-                mode=dr.ADMode.Primal,
-                scene=scene,
-                sampler=sampler.clone(),
-                ray=ray,
-                block=film.create_block(),
-                δL=None,
-                state_in=None,
-                reparam=None,
-                active=mi.Bool(True)
-            )
-
-            # Launch the Monte Carlo sampling process in forward mode (2)
-            δL, valid_2, state_out_2 = self.sample(
+            δL, valid, state_out = self.sample(
                 mode=dr.ADMode.Forward,
                 scene=scene,
                 sampler=sampler,
                 ray=ray,
                 block=film.create_block(),
                 δL=film.create_block(),
-                state_in=state_out,
+                state_in=mi.Spectrum(0.),
                 reparam=reparam,
                 active=mi.Bool(True)
             )
@@ -471,12 +467,11 @@ class PRBAcousticIntegrator(RBIntegrator):
 
                     dr.schedule(sample_pos_deriv, dr.grad(sample_pos_deriv))
 
-            # Perform the weight division and return an image tensor
             film.put_block(δL)
 
             # Explicitly delete any remaining unused variables
-            del sampler, ray, weight, L, valid, δL, valid_2, params, \
-                state_out, state_out_2 #, pos
+            del sampler, ray, weight, L, valid, δL, params, \
+                state_out #, pos
 
             # Probably a little overkill, but why not.. If there are any
             # DrJit arrays to be collected by Python's cyclic GC, then

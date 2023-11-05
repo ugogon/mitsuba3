@@ -229,24 +229,29 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
 
             # ---- Update loop variables based on current interaction -----
 
+            η     *= bsdf_sample.eta
+            β     *= bsdf_weight
+            L_prev = L  # Value of 'L' at previous vertex
+
+            # put and accumulate current (differential) radiance
+
             Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * distance / max_distance)
             Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * (distance + dr.norm(ds.p - si_cur.p)) / max_distance)
 
             if primal:
-                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x, 1.0),     active=(Le.x > 0.))
-                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.0))
-
-            if δL is not None and mode != dr.ADMode.Forward:
+                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x,     1.0), active=(Le.x     > 0.))
+                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.))
+                L = L + Le + Lr_dir
+            elif mode == dr.ADMode.Forward:
+                δL.put(pos=Le_pos,     values=mi.Vector2f((L * Le    ).x, 1.0))
+                δL.put(pos=Lr_dir_pos, values=mi.Vector2f((L * Lr_dir).x, 1.0))
+            elif mode == dr.ADMode.Backward:
                 with dr.resume_grad(when=not primal):
                     Le     = Le     * δL.read(pos=Le_pos)[0]
                     Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos)[0]
-
-            η     *= bsdf_sample.eta
-            β     *= bsdf_weight
-            L_prev = L  # Value of 'L' at previous vertex
-            L      = (L + Le + Lr_dir) if primal else (L - Le - Lr_dir)
+                L = (L - Le - Lr_dir)
 
             # -------------------- Stopping criterion ---------------------
 
@@ -342,15 +347,15 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                     Le_next = β * mis_em * \
                         si_next.emitter(scene).eval(si_next, active_next)
 
+                    dist_next = distance + si_next.t
+
+                    Le_n_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                            block.size().y * dist_next / max_distance)
+                    Lr_dir_n_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                            block.size().y *
+                                            (dist_next + dr.norm(si_cur_reparam_only.p - si_next.p)) / max_distance)
+
                     if mode != dr.ADMode.Forward:
-                        dist_next = distance + si_next.t
-
-                        Le_n_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                                block.size().y * dist_next / max_distance)
-                        Lr_dir_n_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                                block.size().y *
-                                                (dist_next + dr.norm(si_cur_reparam_only.p - si_next.p)) / max_distance)
-
                         Le_next     = Le_next     * δL.read(pos=Le_n_pos)[0]
                         Lr_dir_next = Lr_dir_next * δL.read(pos=Lr_dir_n_pos)[0]
 
@@ -401,12 +406,15 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                     if mode == dr.ADMode.Backward:
                         dr.backward_from(Lo)
                     else:
-                        if dr.grad_enabled(Le) or dr.grad_enabled(Lr_ind):
+                        # TODO: next term is missing
+                        if dr.grad_enabled(Le * ray_reparam_det):
                             δL.put(pos=Le_pos,
-                                   values=mi.Vector2f(dr.forward_to(Le + Lr_ind).x, 1.0))
-                        if dr.grad_enabled(Lr_dir):
+                                   values=mi.Vector2f(dr.forward_to(Le * ray_reparam_det).x, 1.0))
+                        if dr.grad_enabled(Lr_dir * ray_reparam_det):
                             δL.put(pos=Lr_dir_pos,
-                                   values=mi.Vector2f(dr.forward_to(Lr_dir).x, 1.0))
+                                   values=mi.Vector2f(dr.forward_to(Lr_dir * ray_reparam_det).x, 1.0))
+                        if dr.grad_enabled(Lr_ind * ray_reparam_det):
+                            L = L + dr.forward_to(Lr_ind * ray_reparam_det)
 
             # Differential phases need access to the previous interaction, too
             if not primal:
