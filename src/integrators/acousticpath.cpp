@@ -47,6 +47,8 @@ public:
             Throw("\"rr_depth\" must be set to a value greater than zero!");
 
         m_rr_depth = (uint32_t) rr_depth;
+
+        m_verbose = props.get<bool>("verbose", false);
     }
 
     TensorXf render(Scene *scene,
@@ -452,6 +454,12 @@ public:
                      distance <= max_distance;
         }
 
+        if (m_verbose) {
+            std::cout << "max: "  << dr::max(depth)
+                      << " avg: " << dr::mean(depth)
+                      << " var: " << dr::mean(dr::sqr(depth - dr::mean(depth))) << std::endl;
+        }
+
         return {
             /* spec  = */ dr::select(valid_ray, throughput, 0.f),
             /* valid = */ valid_ray
@@ -521,6 +529,7 @@ protected:
     float m_speed_of_sound;
 
     bool m_skip_direct;
+    bool m_verbose;
 };
 
 MI_IMPLEMENT_CLASS_VARIANT(AcousticPathIntegrator, MonteCarloIntegrator)
