@@ -240,18 +240,20 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * (distance + dr.norm(ds.p - si_cur.p)) / max_distance)
 
+            if mode == dr.ADMode.Forward:
+                δL.put(pos=Le_pos,     values=mi.Vector2f((L * Le    ).x, 1.0))
+                δL.put(pos=Lr_dir_pos, values=mi.Vector2f((L * Lr_dir).x, 1.0))
+            elif δL is not None:
+                with dr.resume_grad(when=not primal):
+                    Le     = Le     * δL.read(pos=Le_pos)[0]
+                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos)[0]
+
             if primal:
                 block.put(pos=Le_pos,     values=mi.Vector2f(Le.x,     1.0), active=(Le.x     > 0.))
                 block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.))
                 L = L + Le + Lr_dir
-            elif mode == dr.ADMode.Forward:
-                δL.put(pos=Le_pos,     values=mi.Vector2f((L * Le    ).x, 1.0))
-                δL.put(pos=Lr_dir_pos, values=mi.Vector2f((L * Lr_dir).x, 1.0))
             elif mode == dr.ADMode.Backward:
-                with dr.resume_grad(when=not primal):
-                    Le     = Le     * δL.read(pos=Le_pos)[0]
-                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos)[0]
-                L = (L - Le - Lr_dir)
+                L = L - Le - Lr_dir
 
             # -------------------- Stopping criterion ---------------------
 
