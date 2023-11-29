@@ -321,6 +321,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             if mode == dr.ADMode.Forward:
                 δL.put(pos=Le_pos,     values=mi.Vector2f((L * Le    ).x, 1.0))
                 δL.put(pos=Lr_dir_pos, values=mi.Vector2f((L * Lr_dir).x, 1.0))
+                L = L + Le + Lr_dir
             elif δL is not None:
                 with dr.resume_grad(when=not primal):
                     Le     = Le     * δL.read(pos=Le_pos)[0]
@@ -445,7 +446,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             ray, weight, _, det = self.sample_rays(scene, sensor,
                                                      sampler, reparam)
 
-            δL, valid, state_out = self.sample(
+            δL, valid, L = self.sample(
                 mode=dr.ADMode.Forward,
                 scene=scene,
                 sampler=sampler,
@@ -472,8 +473,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             film.put_block(δL)
 
             # Explicitly delete any remaining unused variables
-            del sampler, ray, weight, L, valid, δL, params, \
-                state_out #, pos
+            del sampler, ray, weight, L, valid, δL, params #, state_out, pos
 
             # Probably a little overkill, but why not.. If there are any
             # DrJit arrays to be collected by Python's cyclic GC, then
