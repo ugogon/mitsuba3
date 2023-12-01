@@ -956,6 +956,20 @@ class RBIntegrator(ADIntegrator):
                         alpha=dr.select(valid, mi.Float(1), mi.Float(0))
                     )
 
+                    # debugging
+                    # block = film.create_block()
+                    # block.put(
+                    #     pos=pos,
+                    #     wavelengths=ray.wavelengths,
+                    #     value=L * weight * det,
+                    #     weight=det,
+                    # )
+                    # film.put_block(block)
+                    # image = film.develop()
+                    # print(image.numpy()[0, 0, 0])
+                    # print(dr.mean(L.x * weight.x * det))
+                    # dr.backward(image)
+
             # We don't need any of the outputs here
             del L_2, valid_2, state_out, state_out_2, δL, \
                 ray, weight, pos, sampler
