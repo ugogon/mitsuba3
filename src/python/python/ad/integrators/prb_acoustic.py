@@ -562,13 +562,12 @@ class PRBAcousticIntegrator(RBIntegrator):
             # Propagate gradient image to sample positions if necessary
             if reparam is not None:
                 with dr.resume_grad():
-                    # Accumulate into the image block.
                     # After reparameterizing the camera ray, we need to evaluate
                     #   Σ (fi Li det)
                     #  ---------------
                     #   Σ (fi det)
                     L[~valid] = 0.0
-                    dr.backward(L * weight * det * dr.rcp(dr.sum(det)))
+                    dr.backward(L * weight * det)
 
             # We don't need any of the outputs here
             del L, L_2, valid, valid_2, state_out, state_out_2, δL, \
