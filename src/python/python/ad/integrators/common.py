@@ -40,7 +40,7 @@ class ADIntegrator(mi.CppADIntegrator):
             raise Exception("\"rr_depth\" must be set to a value greater than zero!")
 
         # Warn about potential bias due to shapes entering/leaving the frame
-        self.sample_border_warning = True
+        self.sample_border_warning = props.get("border_warning", True)
 
     def to_string(self):
         return f'{type(self).__name__}[max_depth = {self.max_depth},' \
@@ -354,8 +354,10 @@ class ADIntegrator(mi.CppADIntegrator):
         reparam_det = 1.0
 
         if reparam is not None:
-            if rfilter.is_box_filter():
-                raise Exception(
+            if rfilter.is_box_filter() and self.sample_border_warning:
+                self.sample_border_warning = True
+
+                mi.Log(mi.LogLevel.Warn,
                     "ADIntegrator detected the potential for image-space "
                     "motion due to differentiable shape or camera pose "
                     "parameters. This is, however, incompatible with the box "
@@ -941,7 +943,7 @@ class RBIntegrator(ADIntegrator):
             )
 
             # Propagate gradient image to sample positions if necessary
-            if reparam is not None:
+            if True and reparam is not None:
                 with dr.resume_grad():
                     # Accumulate into the image block.
                     # After reparameterizing the camera ray, we need to evaluate
