@@ -12,11 +12,12 @@ ImageBlock<Float, Spectrum>::ImageBlock(const ScalarVector2u &size,
                                         const ReconstructionFilter *rfilter,
                                         bool border, bool normalize,
                                         bool coalesce, bool compensate,
-                                        bool warn_negative, bool warn_invalid)
+                                        bool warn_negative, bool warn_invalid,
+                                        bool y_only)
     : m_offset(offset), m_size(0), m_channel_count(channel_count),
       m_rfilter(rfilter), m_normalize(normalize), m_coalesce(coalesce),
       m_compensate(compensate), m_warn_negative(warn_negative),
-      m_warn_invalid(warn_invalid) {
+      m_warn_invalid(warn_invalid), m_y_only(y_only) {
 
     // Detect if a box filter is being used, and just discard it in that case
     if (rfilter && rfilter->is_box_filter())
@@ -35,10 +36,11 @@ ImageBlock<Float, Spectrum>::ImageBlock(const TensorXf &tensor,
                                         const ReconstructionFilter *rfilter,
                                         bool border, bool normalize,
                                         bool coalesce, bool compensate,
-                                        bool warn_negative, bool warn_invalid)
+                                        bool warn_negative, bool warn_invalid,
+                                        bool y_only)
     : m_offset(offset), m_rfilter(rfilter), m_normalize(normalize),
       m_coalesce(coalesce), m_compensate(compensate),
-      m_warn_negative(warn_negative), m_warn_invalid(warn_invalid) {
+      m_warn_negative(warn_negative), m_warn_invalid(warn_invalid), m_y_only(y_only) {
 
     if (tensor.ndim() != 3)
 		Throw("ImageBlock(const TensorXf&): expected a 3D tensor (height x width x channels)!");
@@ -272,8 +274,12 @@ MI_VARIANT void ImageBlock<Float, Spectrum>::put(const Point2f &pos,
                 count_u = pos_1_u - pos_0_u + 1u;
 
         // Base index of the top left corner
-        UInt32 index =
-            dr::fmadd(pos_0_u.y(), size.x(), pos_0_u.x()) * m_channel_count;
+        UInt32 index = dr::fmadd(pos_0_u.y(), size.x(), pos_0_u.x()) * m_channel_count;
+        if (m_y_only) {
+            index  = dr::fmadd(pos_0_u.y(), size.x(),
+                               Point2u(dr::maximum(dr::ceil2int<Point2i>(pos_f), ScalarPoint2i(0))).x());
+            index *= m_channel_count;
+        }
 
         // Compute the number of filter evaluations needed along each axis
         ScalarVector2u count;
@@ -351,24 +357,37 @@ MI_VARIANT void ImageBlock<Float, Spectrum>::put(const Point2f &pos,
             for (uint32_t y = 0; y < count.y(); ++y) {
                 Mask active_1 = active && y < count_u.y();
 
-                for (uint32_t x = 0; x < count.x(); ++x) {
-                    Mask active_2 = active_1 && x < count_u.x();
-
+                if (m_y_only) {
+                    Float weight = weights_y[y];
                     for (uint32_t k = 0; k < m_channel_count; ++k) {
-                        Float weight = weights_x[x] * weights_y[y];
-
                         if constexpr (!JIT) {
-                            DRJIT_MARK_USED(active_2);
-                            ptr[index] = dr::fmadd(values[k], weight, ptr[index]);
+                            DRJIT_MARK_USED(active_1);
+                            ptr[index] = dr::fmadd(values[k], weight, ptr[index + k]);
                         } else {
-                            accum(values[k] * weight, index, active_2);
+                            accum(values[k] * weight, index + k, active_1);
                         }
-
-                        index++;
                     }
-                }
+                    index += size.x() * m_channel_count;
+                } else {
+                    for (uint32_t x = 0; x < count.x(); ++x) {
+                        Mask active_2 = active_1 && x < count_u.x();
 
-                index += (size.x() - count.x()) * m_channel_count;
+                        for (uint32_t k = 0; k < m_channel_count; ++k) {
+                            Float weight = weights_x[x] * weights_y[y];
+
+                            if constexpr (!JIT) {
+                                DRJIT_MARK_USED(active_2);
+                                ptr[index] = dr::fmadd(values[k], weight, ptr[index]);
+                            } else {
+                                accum(values[k] * weight, index, active_2);
+                            }
+
+                            index++;
+                        }
+                    }
+
+                    index += (size.x() - count.x()) * m_channel_count;
+                }
             }
 
             // Destruct weight variables
@@ -389,22 +408,29 @@ MI_VARIANT void ImageBlock<Float, Spectrum>::put(const Point2f &pos,
                 Float weight_y = m_rfilter->eval(rel_f.y() + Float(ys));
                 Mask active_1 = active && (pos_0_u.y() + ys <= pos_1_u.y());
 
-                UInt32 xs = 0;
-                dr::Loop<Mask> loop_2("ImageBlock::put() [2]", xs, index);
-
-                while (loop_2(xs < count.x())) {
-                    Float weight_x = m_rfilter->eval(rel_f.x() + Float(xs)),
-                          weight = weight_x * weight_y;
-
-                    Mask active_2 = active_1 && (pos_0_u.x() + xs <= pos_1_u.x());
+                if (m_y_only) {
                     for (uint32_t k = 0; k < m_channel_count; ++k)
-                        accum(values[k] * weight, index++, active_2);
+                        accum(values[k] * weight_y, index + k, active_1);
 
-                    xs++;
+                    index += size.x() * m_channel_count;
+                } else {
+                    UInt32 xs = 0;
+                    dr::Loop<Mask> loop_2("ImageBlock::put() [2]", xs, index);
+
+                    while (loop_2(xs < count.x())) {
+                        Float weight_x = m_rfilter->eval(rel_f.x() + Float(xs)),
+                              weight = weight_x * weight_y;
+
+                        Mask active_2 = active_1 && (pos_0_u.x() + xs <= pos_1_u.x());
+                        for (uint32_t k = 0; k < m_channel_count; ++k)
+                            accum(values[k] * weight, index++, active_2);
+
+                        xs++;
+                    }
+
+                    index += (size.x() - count.x()) * m_channel_count;
                 }
-
                 ys++;
-                index += (size.x() - count.x()) * m_channel_count;
             }
         }
 
@@ -435,6 +461,11 @@ MI_VARIANT void ImageBlock<Float, Spectrum>::put(const Point2f &pos,
         UInt32 x = UInt32(pos_i_local.x()),
                y = UInt32(pos_i_local.y()),
                index = dr::fmadd(y, size.x(), x) * m_channel_count;
+
+        if (m_y_only) {
+            index  = dr::fmadd(y, size.x(), UInt32(dr::floor2int<Point2i>(pos).x()));
+            index *= m_channel_count;
+        }
 
         // Evaluate filters weights along the X and Y axes
         Point2f rel_f = Point2f(pos_i) + .5f - pos;
@@ -477,19 +508,29 @@ MI_VARIANT void ImageBlock<Float, Spectrum>::put(const Point2f &pos,
             for (uint32_t ys = 0; ys < count; ++ys) {
                 Mask active_1 = active && y < size.y();
 
-                for (uint32_t xs = 0; xs < count; ++xs) {
-                    Mask active_2 = active_1 && x < size.x();
-                    Float weight = weights_y[ys] * weights_x[xs];
+                if (m_y_only) {
+                    Float weight = weights_y[ys];
 
                     for (uint32_t k = 0; k < m_channel_count; ++k)
-                        accum(values[k] * weight, index++, active_2);
+                        accum(values[k] * weight, index + k, active_1);
 
-                    x++;
+                    index += size.x() * m_channel_count;
+                } else {
+                    for (uint32_t xs = 0; xs < count; ++xs) {
+                        Mask active_2 = active_1 && x < size.x();
+                        Float weight = weights_y[ys] * weights_x[xs];
+
+                        for (uint32_t k = 0; k < m_channel_count; ++k)
+                            accum(values[k] * weight, index++, active_2);
+
+                        x++;
+                    }
+
+                    x -= count;
+                    index += (size.x() - count) * m_channel_count;
                 }
 
-                x -= count;
                 y += 1;
-                index += (size.x() - count) * m_channel_count;
             }
 
             // Destruct weight variables
@@ -510,22 +551,29 @@ MI_VARIANT void ImageBlock<Float, Spectrum>::put(const Point2f &pos,
                 Float weight_y = m_rfilter->eval(rel_f.y() + Float(ys));
                 Mask active_1 = active && (y + ys < size.y());
 
-                UInt32 xs = 0;
-                dr::Loop<Mask> loop_2("ImageBlock::put() [2]", xs, index);
-
-                while (loop_2(xs < count)) {
-                    Float weight_x = m_rfilter->eval(rel_f.x() + Float(xs)),
-                          weight = weight_x * weight_y;
-
-                    Mask active_2 = active_1 && (x + xs < size.x());
+                if (m_y_only) {
                     for (uint32_t k = 0; k < m_channel_count; ++k)
-                        accum(values[k] * weight, index++, active_2);
+                        accum(values[k] * weight_y, index + k, active_1);
 
-                    xs++;
+                    index += size.x() * m_channel_count;
+                } else {
+                    UInt32 xs = 0;
+                    dr::Loop<Mask> loop_2("ImageBlock::put() [2]", xs, index);
+
+                    while (loop_2(xs < count)) {
+                        Float weight_x = m_y_only ? Float(1.f) : m_rfilter->eval(rel_f.x() + Float(xs)),
+                              weight = weight_x * weight_y;
+
+                        Mask active_2 = active_1 && (x + xs < size.x());
+                        for (uint32_t k = 0; k < m_channel_count; ++k)
+                            accum(values[k] * weight, index++, active_2);
+
+                        xs++;
+                    }
+
+                    index += (size.x() - count) * m_channel_count;
                 }
-
                 ys++;
-                index += (size.x() - count) * m_channel_count;
             }
         }
     }
@@ -603,8 +651,12 @@ MI_VARIANT void ImageBlock<Float, Spectrum>::read(const Point2f &pos_,
             count_u = pos_1_u - pos_0_u + 1u;
 
     // Base index of the top left corner
-    UInt32 index =
-        dr::fmadd(pos_0_u.y(), size.x(), pos_0_u.x()) * m_channel_count;
+    UInt32 index = dr::fmadd(pos_0_u.y(), size.x(), pos_0_u.x()) * m_channel_count;
+    if (m_y_only) {
+        index  = dr::fmadd(pos_0_u.y(), size.x(),
+                           Point2u(dr::maximum(dr::ceil2int<Point2i>(pos_f), ScalarPoint2i(0))).x());
+        index *= m_channel_count;
+    }
 
     // Compute the number of filter evaluations needed along each axis
     ScalarVector2u count;
@@ -673,21 +725,31 @@ MI_VARIANT void ImageBlock<Float, Spectrum>::read(const Point2f &pos_,
         for (uint32_t y = 0; y < count.y(); ++y) {
             Mask active_1 = active && y < count_u.y();
 
-            for (uint32_t x = 0; x < count.x(); ++x) {
-                Mask active_2 = active_1 && x < count_u.x();
-
-                Float weight = weights_x[x] * weights_y[y];
-
+            if (m_y_only) {
+                Float weight = weights_y[y];
                 for (uint32_t k = 0; k < m_channel_count; ++k) {
                     values[k] = dr::fmadd(
-                        dr::gather<Float>(m_tensor.array(), index, active_2),
+                        dr::gather<Float>(m_tensor.array(), index + k, active_1),
                         weight, values[k]);
-
-                    index++;
                 }
-            }
+                index += size.x() * m_channel_count;
+            } else {
+                for (uint32_t x = 0; x < count.x(); ++x) {
+                    Mask active_2 = active_1 && x < count_u.x();
 
-            index += (size.x() - count.x()) * m_channel_count;
+                    Float weight = weights_x[x] * weights_y[y];
+
+                    for (uint32_t k = 0; k < m_channel_count; ++k) {
+                        values[k] = dr::fmadd(
+                            dr::gather<Float>(m_tensor.array(), index, active_2),
+                            weight, values[k]);
+
+                        index++;
+                    }
+                }
+
+                index += (size.x() - count.x()) * m_channel_count;
+            }
         }
 
         // Destruct weight variables
@@ -714,33 +776,46 @@ MI_VARIANT void ImageBlock<Float, Spectrum>::read(const Point2f &pos_,
             Float weight_y = m_rfilter->eval(rel_f.y() + Float(ys));
             Mask active_1 = active && (pos_0_u.y() + ys <= pos_1_u.y());
 
-            UInt32 xs = 0;
-            dr::Loop<Mask> loop_2("ImageBlock::read() [2]");
+            if (m_y_only) {
+                Float weight = weight_y;
 
-            loop_2.put(xs, index, weight_sum);
-            for (uint32_t k = 0; k < m_channel_count; ++k)
-                loop_2.put(values[k]);
-            loop_2.init();
-
-            while (loop_2(xs < count.x())) {
-                Float weight_x = m_rfilter->eval(rel_f.x() + Float(xs)),
-                      weight = weight_x * weight_y;
-
-                Mask active_2 = active_1 && (pos_0_u.x() + xs <= pos_1_u.x());
                 for (uint32_t k = 0; k < m_channel_count; ++k) {
                     values[k] = dr::fmadd(
-                        dr::gather<Float>(m_tensor.array(), index, active_2),
+                        dr::gather<Float>(m_tensor.array(), index + k, active_1),
                         weight, values[k]);
-
-                    index++;
                 }
 
-                weight_sum += dr::select(active_2, weight, 0.f);
-                xs++;
-            }
+                weight_sum += dr::select(active_1, weight, 0.f);
+                index += size.x() * m_channel_count;
+            } else {
+                UInt32 xs = 0;
+                dr::Loop<Mask> loop_2("ImageBlock::read() [2]");
 
+                loop_2.put(xs, index, weight_sum);
+                for (uint32_t k = 0; k < m_channel_count; ++k)
+                    loop_2.put(values[k]);
+                loop_2.init();
+
+                while (loop_2(xs < count.x())) {
+                    Float weight_x = m_rfilter->eval(rel_f.x() + Float(xs)),
+                          weight = weight_x * weight_y;
+
+                    Mask active_2 = active_1 && (pos_0_u.x() + xs <= pos_1_u.x());
+                    for (uint32_t k = 0; k < m_channel_count; ++k) {
+                        values[k] = dr::fmadd(
+                            dr::gather<Float>(m_tensor.array(), index, active_2),
+                            weight, values[k]);
+
+                        index++;
+                    }
+
+                    weight_sum += dr::select(active_2, weight, 0.f);
+                    xs++;
+                }
+
+                index += (size.x() - count.x()) * m_channel_count;
+            }
             ys++;
-            index += (size.x() - count.x()) * m_channel_count;
         }
 
         if (m_normalize) {
@@ -766,6 +841,7 @@ MI_VARIANT std::string ImageBlock<Float, Spectrum>::to_string() const {
         << "  compensate = " << m_compensate << "," << std::endl
         << "  warn_negative = " << m_warn_negative << "," << std::endl
         << "  warn_invalid = " << m_warn_invalid << "," << std::endl
+        << "  y_only = " << m_y_only << "," << std::endl
         << "  rfilter = " << (m_rfilter ? string::indent(m_rfilter) : "BoxFilter[]")
         << std::endl
         << "]";
