@@ -463,7 +463,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             with dr.resume_grad():
                 if True and reparam is not None:
                     L[~valid] = 0.0
-                    sample_pos_deriv = dr.sum(L.x * weight.x * det) * dr.rcp(dr.sum(det))
+                    sample_pos_deriv = dr.mean(L.x * weight.x * det)
 
                     # Compute the derivative of the reparameterized image ..
                     dr.forward_to(sample_pos_deriv, flags=dr.ADFlag.ClearInterior | dr.ADFlag.ClearEdges)
@@ -570,7 +570,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                     #  ---------------
                     #   Σ (fi det)
                     L[~valid] = 0.0
-                    dr.backward(L * weight * det)
+                    dr.backward(dr.mean(L * weight * det))
 
             # We don't need any of the outputs here
             del L, L_2, valid, valid_2, state_out, state_out_2, δL, \
