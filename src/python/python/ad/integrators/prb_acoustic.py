@@ -189,14 +189,15 @@ class PRBAcousticIntegrator(RBIntegrator):
                ray: mi.Ray3f,
                block: mi.ImageBlock,
                δL: Optional[mi.ImageBlock],
-               state_in: Optional[mi.Spectrum],
+               state_in_δL: Optional[mi.Spectrum],
+               state_in_δLdG: Optional[mi.Spectrum],
                active: mi.Bool,
                **_ # Absorbs unused arguments
     ) -> Tuple[mi.Spectrum, mi.Bool, mi.Spectrum]:
 
         # Rendering a primal image? (vs performing forward/reverse-mode AD)
         primal = mode == dr.ADMode.Primal
-        assert primal or (δL is not None and state_in is not None)
+        assert primal or (δL is not None and state_in_δL is not None and state_in_δLdG is not None)
 
         # Standard BSDF evaluation context for path tracing
         bsdf_ctx = mi.BSDFContext()
@@ -208,11 +209,12 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         # Copy input arguments to avoid mutating the caller's state
         ray = mi.Ray3f(dr.detach(ray))
-        depth = mi.UInt32(0)                          # Depth of current vertex
-        L = mi.Spectrum(0 if primal else state_in)    # Radiance accumulator
-        β = mi.Spectrum(1)                            # Path throughput weight
-        η = mi.Float(1)                               # Index of refraction
-        active = mi.Bool(active)                      # Active SIMD lanes
+        depth = mi.UInt32(0)                               # Depth of current vertex
+        L    = mi.Spectrum(0 if primal else state_in_δL)   # Radiance accumulator
+        δLdG = mi.Spectrum(0 if primal else state_in_δLdG) # Radiance*Gaussian accumulator
+        β = mi.Spectrum(1)                                 # Path throughput weight
+        η = mi.Float(1)                                    # Index of refraction
+        active = mi.Bool(active)                           # Active SIMD lanes
 
         # Variables caching information from the previous bounce
         prev_si         = dr.zeros(mi.SurfaceInteraction3f)
@@ -223,7 +225,7 @@ class PRBAcousticIntegrator(RBIntegrator):
         # TODO: loop should keep track of imageblock and δL
         loop = mi.Loop(name="PRB Acoustic (%s)" % mode.name,
                        state=lambda: (distance, #block.tensor(),
-                                      sampler, ray, depth, L, #δL.tensor(),
+                                      sampler, ray, depth, L, δLdG, #δL.tensor(),
                                       β, η, active,
                                       prev_si, prev_bsdf_pdf, prev_bsdf_delta))
 
@@ -310,6 +312,48 @@ class PRBAcousticIntegrator(RBIntegrator):
             prev_si = dr.detach(si, True)
             prev_bsdf_pdf = bsdf_sample.pdf
             prev_bsdf_delta = mi.has_flag(bsdf_sample.sampled_type, mi.BSDFFlags.Delta)
+
+            # PRB-style tracking of time derivatives
+            δLdG_Le     = mi.Float(0.)
+            δLdG_Lr_dir = mi.Float(0.)
+            if δL is not None:
+                # This is executed in the PRB primal and adjoint passes
+                with dr.resume_grad():
+                    T     = dr.detach(distance) # Full distance of current path
+                    T_dir = dr.detach(distance + dr.norm(ds.p - si.p)) # Full distance of direct emitter path
+                    dr.enable_grad(T, T_dir)
+
+                    Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                            block.size().y * T / max_distance)
+                    Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                            block.size().y * T_dir / max_distance)
+                    
+                    δL_Le     = δL.read(pos=Le_pos)[0]
+                    δL_Lr_dir = δL.read(pos=Lr_dir_pos)[0]
+
+                    dr.forward_from(T)
+                    dr.forward_from(T_dir)
+
+                    δLdG_Le     = dr.detach(dr.grad(δL_Le))
+                    δLdG_Lr_dir = dr.detach(dr.grad(δL_Lr_dir))
+
+                # TODO: Check if this needs to move inside resume_grad
+                # TODO: Verify the multiplication with energy (should be 1 here, luckily)
+                # TODO: How to track changes of the emitter radiance?
+                δLdG_Le     = dr.detach(Le)     * δLdG_Le
+                δLdG_Lr_dir = dr.detach(Lr_dir) * δLdG_Lr_dir
+
+            if primal:
+                # PRB primal 
+                δLdG = δLdG + δLdG_Le + δLdG_Lr_dir
+            elif mode == dr.ADMode.Backward:
+                # PRB adjoint (backward)
+                with dr.resume_grad():
+                    t0     = si.t
+                    t0_dir = dr.norm(ds.p - si.p)
+                    dr.backward_from(-t0     * δLdG)
+                    dr.backward_from(-t0_dir * δLdG_Lr_dir) # <- attention, this line is different and only for direct light!
+                δLdG = δLdG - δL_Le - δL_Lr_dir
 
             # put and accumulate current (differential) radiance
 
@@ -402,7 +446,8 @@ class PRBAcousticIntegrator(RBIntegrator):
         return (
             L if primal else δL, # Radiance/differential radiance
             dr.neq(depth, 0),    # Ray validity flag for alpha blending
-            L                    # State for the differential phase
+            L,                   # State for the differential phase
+            δLdG
         )
 
     def render_forward(self: mi.SamplingIntegrator,
