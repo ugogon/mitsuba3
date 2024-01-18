@@ -67,7 +67,8 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                ray: mi.Ray3f,
                block: mi.ImageBlock,
                δL: Optional[mi.ImageBlock],
-               state_in: Optional[mi.Spectrum],
+               state_in_δL: Optional[mi.Spectrum],
+               state_in_δLdG: Optional[mi.Spectrum],
                reparam: Optional[
                    Callable[[mi.Ray3f, mi.Bool], Tuple[mi.Ray3f, mi.Float]]],
                active: mi.Bool,
@@ -76,7 +77,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
 
         # Rendering a primal image? (vs performing forward/reverse-mode AD)
         primal = mode == dr.ADMode.Primal
-        assert primal or (δL is not None and state_in is not None)
+        assert primal or (δL is not None and state_in_δL is not None and state_in_δLdG is not None)
 
         # Standard BSDF evaluation context for path tracing
         bsdf_ctx = mi.BSDFContext()
@@ -87,12 +88,13 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
         max_distance = self.max_time * self.speed_of_sound
 
         # Copy input arguments to avoid mutating the caller's state
-        depth = mi.UInt32(0)                          # Depth of current vertex
-        L = mi.Spectrum(0 if primal else state_in)    # Radiance accumulator
-        β = mi.Spectrum(1)                            # Path throughput weight
-        η = mi.Float(1)                               # Index of refraction
-        mis_em = mi.Float(1)                          # Emitter MIS weight
-        active = mi.Bool(active)                      # Active SIMD lanes
+        depth = mi.UInt32(0)                               # Depth of current vertex
+        L    = mi.Spectrum(0 if primal else state_in_δL)   # Radiance accumulator
+        δLdG = mi.Spectrum(0 if primal else state_in_δLdG) # Radiance*Gaussian accumulator
+        β = mi.Spectrum(1)                                 # Path throughput weight
+        η = mi.Float(1)                                    # Index of refraction
+        mis_em = mi.Float(1)                               # Emitter MIS weight
+        active = mi.Bool(active)                           # Active SIMD lanes
 
         if self.skip_direct:
             mis_em = mi.Float(0.)
@@ -234,6 +236,24 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             L_prev = L  # Value of 'L' at previous vertex
 
             # put and accumulate current (differential) radiance
+
+            if δL is not None and primal: 
+                # Execute in PRB primal pass
+                Ls = [Le, Lr_dir]
+                ts = [mi.Float(distance), mi.Float(distance + dr.norm(ds.p - si_cur.p))]
+                for t, L_ in zip(ts, Ls):
+                    # t is the current distance not attached to the AD graph
+                    with dr.resume_grad():
+                        dr.enable_grad(t)
+                        δL_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                                block.size().y * t / max_distance)
+                        E = δL.read(pos=δL_pos)
+                        dr.forward_from(t)
+                    δLdG += L_ * dr.grad(E)
+            elif δL is not None and not primal:
+                # Execute in PRB adjoint pass
+                # δLdG is the product of δL and the derivative of the Gaussian Kernel dG
+                dr.backward_from(δLdG * (si_cur.t + dr.norm(ds.p - si_cur.p)))
 
             Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * distance / max_distance)
@@ -434,7 +454,8 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
         return (
             L if primal else δL, # Radiance/differential radiance
             dr.neq(depth, 0),    # Ray validity flag for alpha blending
-            L                    # State for the differential phase
+            L,                    # State for the differential phase
+            δLdG
         )
 
     def to_string(self):

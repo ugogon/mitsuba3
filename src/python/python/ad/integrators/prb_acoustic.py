@@ -446,14 +446,15 @@ class PRBAcousticIntegrator(RBIntegrator):
             ray, weight, _, det = self.sample_rays(scene, sensor,
                                                      sampler, reparam)
 
-            δL, valid, L = self.sample(
+            δL, valid, L, δLdG = self.sample(
                 mode=dr.ADMode.Forward,
                 scene=scene,
                 sampler=sampler,
                 ray=ray,
                 block=film.create_block(),
                 δL=film.create_block(),
-                state_in=mi.Spectrum(0.),
+                state_in_δL=mi.Spectrum(0.),
+                state_in_δLdG=mi.Spectrum(0.),
                 reparam=reparam,
                 active=mi.Bool(True)
             )
@@ -537,27 +538,29 @@ class PRBAcousticIntegrator(RBIntegrator):
             block = film.create_block()
 
             # Launch the Monte Carlo sampling process in primal mode (1)
-            L, valid, state_out = self.sample(
+            L, valid, state_out_δL, state_out_δLdG = self.sample(
                 mode=dr.ADMode.Primal,
                 scene=scene,
                 sampler=sampler.clone(),
                 ray=ray,
                 block=block,
                 δL=δL,
-                state_in=None,
+                state_in_δL=None,
+                state_in_δLdG=None,
                 reparam=None,
                 active=mi.Bool(True)
             )
 
             # Launch Monte Carlo sampling in backward AD mode (2)
-            L_2, valid_2, state_out_2 = self.sample(
+            L_2, valid_2, state_out_δL_2, state_out_δLdG_2 = self.sample(
                 mode=dr.ADMode.Backward,
                 scene=scene,
                 sampler=sampler,
                 ray=ray,
                 block=block,
                 δL=δL,
-                state_in=state_out,
+                state_in_δL=state_out_δL,
+                state_in_δLdG=state_out_δLdG,
                 reparam=reparam,
                 active=mi.Bool(True)
             )
@@ -573,7 +576,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                     dr.backward(dr.mean(L * weight * det))
 
             # We don't need any of the outputs here
-            del L, L_2, valid, valid_2, state_out, state_out_2, δL, \
+            del L, L_2, valid, valid_2, state_out_δL, state_out_δLdG, state_out_δL_2, state_out_δLdG_2 δL, \
                 ray, weight, det, sampler #, pos
 
             gc.collect()
