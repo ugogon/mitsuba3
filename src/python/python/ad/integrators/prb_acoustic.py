@@ -316,15 +316,17 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # ---- PRB-style tracking of time derivatives -----
 
+            active_time      = active & si.is_valid()
+            active_time_next = active_em
             δLdG_Le     = mi.Float(0.)
             δLdG_Lr_dir = mi.Float(0.)
             if δL is not None:
                 # This is executed in the PRB primal and adjoint passes
                 with dr.resume_grad():
                     # The surface interaction can be invalid, in which case we don't want it to have any influence
-                    T     = dr.select(active_next,             # Full distance of current path
+                    T     = dr.select(active_time,             # Full distance of current path
                                       dr.detach(distance), 0.)
-                    T_dir = dr.select(active_next,             # Full distance of direct emitter path
+                    T_dir = dr.select(active_time_next,        # Full distance of direct emitter path
                                       dr.detach(distance + dr.norm(ds.p - si.p)), 0.) 
                     dr.enable_grad(T, T_dir)
 
@@ -354,8 +356,8 @@ class PRBAcousticIntegrator(RBIntegrator):
                 # PRB adjoint (backward)
                 with dr.resume_grad():
                     # The surface interaction can be invalid, in which case we don't want it to have any influence
-                    t0     = dr.select(active_next, si.t,                 0.)
-                    t0_dir = dr.select(active_next, dr.norm(ds.p - si.p), 0.)
+                    t0     = dr.select(active_time,      si.t,                 0.)
+                    t0_dir = dr.select(active_time_next, dr.norm(ds.p - si.p), 0.)
 
                     # TODO (MW): why not -t0 ...?
                     dr.backward_from(t0     * δLdG)
