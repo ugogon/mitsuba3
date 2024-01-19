@@ -314,14 +314,18 @@ class PRBAcousticIntegrator(RBIntegrator):
             prev_bsdf_pdf = bsdf_sample.pdf
             prev_bsdf_delta = mi.has_flag(bsdf_sample.sampled_type, mi.BSDFFlags.Delta)
 
-            # PRB-style tracking of time derivatives
+            # ---- PRB-style tracking of time derivatives -----
+
             δLdG_Le     = mi.Float(0.)
             δLdG_Lr_dir = mi.Float(0.)
             if δL is not None:
                 # This is executed in the PRB primal and adjoint passes
                 with dr.resume_grad():
-                    T     = dr.detach(distance) # Full distance of current path
-                    T_dir = dr.detach(distance + dr.norm(ds.p - si.p)) # Full distance of direct emitter path
+                    # The surface interaction can be invalid, in which case we don't want it to have any influence
+                    T     = dr.select(active_next,             # Full distance of current path
+                                      dr.detach(distance), 0.)
+                    T_dir = dr.select(active_next,             # Full distance of direct emitter path
+                                      dr.detach(distance + dr.norm(ds.p - si.p)), 0.) 
                     dr.enable_grad(T, T_dir)
 
                     Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
@@ -349,11 +353,13 @@ class PRBAcousticIntegrator(RBIntegrator):
             elif mode == dr.ADMode.Backward:
                 # PRB adjoint (backward)
                 with dr.resume_grad():
-                    t0     = si.t
-                    t0_dir = dr.norm(ds.p - si.p)
+                    # The surface interaction can be invalid, in which case we don't want it to have any influence
+                    t0     = dr.select(active_next, si.t,                 0.)
+                    t0_dir = dr.select(active_next, dr.norm(ds.p - si.p), 0.)
+
                     # TODO (MW): why not -t0 ...?
                     dr.backward_from(t0     * δLdG)
-                    dr.backward_from(t0_dir * δLdG_Lr_dir) # <- attention, this line is different and only for direct light!
+                    dr.backward_from(t0_dir * δLdG_Lr_dir) # <- attention, this accounts for the direct light segment!
                 δLdG = δLdG - δL_Le - δL_Lr_dir
 
             # put and accumulate current (differential) radiance
