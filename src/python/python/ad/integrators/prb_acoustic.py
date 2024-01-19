@@ -338,9 +338,8 @@ class PRBAcousticIntegrator(RBIntegrator):
                     δLdG_Le     = dr.detach(dr.grad(δL_Le))
                     δLdG_Lr_dir = dr.detach(dr.grad(δL_Lr_dir))
 
-                # TODO: Check if this needs to move inside resume_grad
-                # TODO: Verify the multiplication with energy (should be 1 here, luckily)
-                # TODO: How to track changes of the emitter radiance?
+                # TODO (MW): Verify the multiplication with energy (should be 1 here, luckily)
+                # TODO (MW): How to track changes of the emitter radiance?
                 δLdG_Le     = dr.detach(Le)     * δLdG_Le
                 δLdG_Lr_dir = dr.detach(Lr_dir) * δLdG_Lr_dir
 
@@ -352,8 +351,9 @@ class PRBAcousticIntegrator(RBIntegrator):
                 with dr.resume_grad():
                     t0     = si.t
                     t0_dir = dr.norm(ds.p - si.p)
-                    dr.backward_from(-t0     * δLdG)
-                    dr.backward_from(-t0_dir * δLdG_Lr_dir) # <- attention, this line is different and only for direct light!
+                    # TODO (MW): why not -t0 ...?
+                    dr.backward_from(t0     * δLdG)
+                    dr.backward_from(t0_dir * δLdG_Lr_dir) # <- attention, this line is different and only for direct light!
                 δLdG = δLdG - δL_Le - δL_Lr_dir
 
             # put and accumulate current (differential) radiance
