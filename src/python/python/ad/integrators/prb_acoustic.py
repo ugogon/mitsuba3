@@ -70,7 +70,8 @@ class PRBAcousticIntegrator(RBIntegrator):
                 ray=ray,
                 block=block,
                 δL=None,
-                state_in=None,
+                state_in_δL=None,
+                state_in_δLdG=None,
                 reparam=None,
                 active=mi.Bool(True)
             )
@@ -621,7 +622,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                     dr.backward(dr.mean(L * weight * det))
 
             # We don't need any of the outputs here
-            del L, L_2, valid, valid_2, state_out_δL, state_out_δLdG, state_out_δL_2, state_out_δLdG_2 δL, \
+            del L, L_2, valid, valid_2, state_out_δL, state_out_δLdG, state_out_δL_2, state_out_δLdG_2, δL, \
                 ray, weight, det, sampler #, pos
 
             gc.collect()
