@@ -77,7 +77,8 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
 
         # Rendering a primal image? (vs performing forward/reverse-mode AD)
         primal = mode == dr.ADMode.Primal
-        assert primal or (δL is not None and state_in_δL is not None and state_in_δLdG is not None)
+        prb_mode = δL is not None and state_in_δL is not None and state_in_δLdG is not None
+        assert primal or prb_mode
 
         # Standard BSDF evaluation context for path tracing
         bsdf_ctx = mi.BSDFContext()
@@ -90,7 +91,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
         # Copy input arguments to avoid mutating the caller's state
         depth = mi.UInt32(0)                               # Depth of current vertex
         L    = mi.Spectrum(0 if primal else state_in_δL)   # Radiance accumulator
-        δLdG = mi.Spectrum(0 if primal else state_in_δLdG) # Radiance*Gaussian accumulator
+        δLdG = mi.Spectrum(0 if primal else state_in_δLdG) # Radiance * Gaussian accumulator
         β = mi.Spectrum(1)                                 # Path throughput weight
         η = mi.Float(1)                                    # Index of refraction
         mis_em = mi.Float(1)                               # Emitter MIS weight
@@ -488,8 +489,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
         return (
             L if primal else δL, # Radiance/differential radiance
             dr.neq(depth, 0),    # Ray validity flag for alpha blending
-            L,                    # State for the differential phase
-            δLdG
+            δLdG                 # State for the differential phase
         )
 
     def to_string(self):
