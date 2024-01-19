@@ -200,7 +200,8 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         # Rendering a primal image? (vs performing forward/reverse-mode AD)
         primal = mode == dr.ADMode.Primal
-        assert primal or (δL is not None and state_in_δL is not None and state_in_δLdG is not None)
+        prb_mode = δL is not None and state_in_δL is not None and state_in_δLdG is not None
+        assert primal or prb_mode
 
         # Standard BSDF evaluation context for path tracing
         bsdf_ctx = mi.BSDFContext()
@@ -214,7 +215,7 @@ class PRBAcousticIntegrator(RBIntegrator):
         ray = mi.Ray3f(dr.detach(ray))
         depth = mi.UInt32(0)                               # Depth of current vertex
         L    = mi.Spectrum(0 if primal else state_in_δL)   # Radiance accumulator
-        δLdG = mi.Spectrum(0 if primal else state_in_δLdG) # Radiance*Gaussian accumulator
+        δLdG = mi.Spectrum(0 if primal else state_in_δLdG) # Radiance * Gaussian accumulator
         β = mi.Spectrum(1)                                 # Path throughput weight
         η = mi.Float(1)                                    # Index of refraction
         active = mi.Bool(active)                           # Active SIMD lanes
@@ -458,8 +459,7 @@ class PRBAcousticIntegrator(RBIntegrator):
         return (
             L if primal else δL, # Radiance/differential radiance
             dr.neq(depth, 0),    # Ray validity flag for alpha blending
-            L,                   # State for the differential phase
-            δLdG
+            δLdG                 # State for the differential phase
         )
 
     def render_forward(self: mi.SamplingIntegrator,
@@ -595,7 +595,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             block = film.create_block()
 
             # Launch the Monte Carlo sampling process in primal mode (1)
-            L, valid, state_out_δL, state_out_δLdG = self.sample(
+            L, valid, state_out_δLdG = self.sample(
                 mode=dr.ADMode.Primal,
                 scene=scene,
                 sampler=sampler.clone(),
@@ -609,14 +609,14 @@ class PRBAcousticIntegrator(RBIntegrator):
             )
 
             # Launch Monte Carlo sampling in backward AD mode (2)
-            L_2, valid_2, state_out_δL_2, state_out_δLdG_2 = self.sample(
+            L_2, valid_2, state_out_δLdG_2 = self.sample(
                 mode=dr.ADMode.Backward,
                 scene=scene,
                 sampler=sampler,
                 ray=ray,
                 block=block,
                 δL=δL,
-                state_in_δL=state_out_δL,
+                state_in_δL=L,
                 state_in_δLdG=state_out_δLdG,
                 reparam=reparam,
                 active=mi.Bool(True)
@@ -633,7 +633,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                     dr.backward(dr.mean(L * weight * det))
 
             # We don't need any of the outputs here
-            del L, L_2, valid, valid_2, state_out_δL, state_out_δLdG, state_out_δL_2, state_out_δLdG_2, δL, \
+            del L, L_2, valid, valid_2, state_out_δLdG, state_out_δLdG_2, \
                 ray, weight, det, sampler #, pos
 
             gc.collect()
