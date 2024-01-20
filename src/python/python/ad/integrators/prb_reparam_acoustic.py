@@ -239,42 +239,40 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             # ---- PRB-style tracking of time derivatives -----
             # TODO (MW): Move to function of `prb_acoustic`?
 
-            if self.track_time_derivatives:
+            t0_diff = mi.Float(0.)
+            if δL is not None and self.track_time_derivatives:
+                # This is executed in the PRB primal and adjoint passes
                 active_time      = active & si_cur.is_valid()
                 active_time_next = active_em
-                δLdG_Le     = mi.Float(0.)
-                δLdG_Lr_dir = mi.Float(0.)
-                if δL is not None:
-                    # This is executed in the PRB primal and adjoint passes
-                    with dr.resume_grad():
-                        # The surface interaction can be invalid, in which case we don't want it to have any influence
-                        T     = dr.select(active_time,             # Full distance of current path
-                                        dr.detach(distance), 0.)
-                        T_dir = dr.select(active_time_next,        # Full distance of direct emitter path
-                                        dr.detach(distance + dr.norm(ds.p - si_cur.p)), 0.) 
-                        dr.enable_grad(T, T_dir)
+                with dr.resume_grad():
+                    # The surface interaction can be invalid, in which case we don't want it to have any influence
+                    T     = dr.select(active_time,             # Full distance of current path
+                                    dr.detach(distance), 0.)
+                    T_dir = dr.select(active_time_next,        # Full distance of direct emitter path
+                                      dr.detach(distance + dr.norm(ds.p - si_cur.p)), 0.)
+                    dr.enable_grad(T, T_dir)
 
-                        Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                                block.size().y * T / max_distance)
-                        Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                                block.size().y * T_dir / max_distance)
-                        
-                        δL_Le     = δL.read(pos=Le_pos)[0]
-                        δL_Lr_dir = δL.read(pos=Lr_dir_pos)[0]
+                    Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                            block.size().y * T / max_distance)
+                    Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                            block.size().y * T_dir / max_distance)
 
-                        dr.forward_from(T)
-                        dr.forward_from(T_dir)
+                    δL_Le     = δL.read(pos=Le_pos)[0]
+                    δL_Lr_dir = δL.read(pos=Lr_dir_pos)[0]
 
-                        δLdG_Le     = dr.detach(dr.grad(δL_Le))
-                        δLdG_Lr_dir = dr.detach(dr.grad(δL_Lr_dir))
+                    dr.forward_from(T)
+                    dr.forward_from(T_dir)
 
-                    # TODO (MW): Verify the multiplication with energy (should be 1 here, luckily)
-                    # TODO (MW): How to track changes of the emitter radiance?
-                    δLdG_Le     = dr.detach(Le)     * δLdG_Le
-                    δLdG_Lr_dir = dr.detach(Lr_dir) * δLdG_Lr_dir
+                    δLdG_Le     = dr.detach(dr.grad(δL_Le))
+                    δLdG_Lr_dir = dr.detach(dr.grad(δL_Lr_dir))
+
+                # TODO (MW): Verify the multiplication with energy (should be 1 here, luckily)
+                # TODO (MW): How to track changes of the emitter radiance?
+                δLdG_Le     = dr.detach(Le)     * δLdG_Le
+                δLdG_Lr_dir = dr.detach(Lr_dir) * δLdG_Lr_dir
 
                 if primal:
-                    # PRB primal 
+                    # PRB primal
                     δLdG = δLdG + δLdG_Le + δLdG_Lr_dir
                 elif mode == dr.ADMode.Backward:
                     # PRB adjoint (backward)
@@ -284,8 +282,8 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                         t0_dir = dr.select(active_time_next, dr.norm(ds.p - si_cur.p), 0.)
 
                         # TODO (MW): why not -t0 ...?
-                        dr.backward_from(t0     * δLdG)
-                        dr.backward_from(t0_dir * δLdG_Lr_dir) # <- attention, this accounts for the direct light segment!
+                        # attention: the seccond summand accounts for the direct light segment!
+                        t0_diff = t0 * δLdG + t0_dir * δLdG_Lr_dir
                     δLdG = δLdG - δL_Le - δL_Lr_dir
 
             # put and accumulate current (differential) radiance
@@ -462,7 +460,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
 
                     # Propagate derivatives from/to 'Lo' based on 'mode'
                     if mode == dr.ADMode.Backward:
-                        dr.backward_from(Lo)
+                        dr.backward_from(Lo + t0_diff)
                     else:
                         # TODO: next term is missing
                         if dr.grad_enabled(Le * ray_reparam_det):
