@@ -103,11 +103,34 @@ public:
         dUVdx,
         dUVdy,
         PrimIndex,
-        ShapeIndex
+        ShapeIndex,
+        IntegratorRGBA
     };
 
-    AOVIntegrator(const Properties &props) : Base(props) {
+    AOVIntegrator(const Properties &props) : Base(props),
+        m_integrator_aovs_count(0) {
         std::vector<std::string> tokens = string::tokenize(props.string("aovs"));
+
+        for (auto &kv : props.objects()) {
+            Base *integrator = dynamic_cast<Base *>(kv.second.get());
+            if (!integrator)
+                Throw("Child objects must be of type 'SamplingIntegrator'!");
+
+            m_integrators.push_back(integrator);
+            m_aov_types.push_back(Type::IntegratorRGBA);
+            m_aov_names.push_back(kv.first + ".R");
+            m_aov_names.push_back(kv.first + ".G");
+            m_aov_names.push_back(kv.first + ".B");
+            m_aov_names.push_back(kv.first + ".A");
+            m_integrator_aovs_count+= 4;
+        }
+
+        for (auto &kv : props.objects()) {
+            Base *integrator = dynamic_cast<Base *>(kv.second.get());
+            std::vector<std::string> aovs = integrator->aov_names();
+            for (auto name: aovs)
+                m_aov_names.push_back(kv.first + "." + name);
+        }
 
         for (const std::string &token: tokens) {
             std::vector<std::string> item = string::tokenize(token, ":");
@@ -174,23 +197,15 @@ public:
             }
         }
 
-        for (auto &kv : props.objects()) {
-            Base *integrator = dynamic_cast<Base *>(kv.second.get());
-            if (!integrator)
-                Throw("Child objects must be of type 'SamplingIntegrator'!");
-
-            m_integrators.push_back(integrator);
-        }
-
         if (m_aov_names.empty())
             Log(Warn, "No AOVs were specified!");
     }
 
     std::pair<Spectrum, Mask> sample(const Scene *scene,
-                                     Sampler * /*sampler*/,
+                                     Sampler * sampler,
                                      const RayDifferential3f &ray,
-                                     const Medium * /*medium*/,
-                                     Float *aovs,
+                                     const Medium * medium,
+                                     Float *_aovs,
                                      Mask active) const override {
         MI_MASKED_FUNCTION(ProfilerPhase::SamplingIntegratorSample, active);
 
@@ -216,6 +231,12 @@ public:
             }
         };
 
+        // We want to pack the channels such that base_channels and inner-integrator
+        // RGBA channels are contiguous
+        Float* aovs_rgba_integrator = _aovs;
+        Float* aovs = _aovs + m_integrator_aovs_count;
+
+        size_t inner_idx = 0;
         for (size_t i = 0; i < m_aov_types.size(); ++i) {
             switch (m_aov_types[i]) {
                 case Type::Albedo: {
@@ -297,6 +318,24 @@ public:
                 case Type::ShapeIndex:
                     *aovs++ = Float(dr::reinterpret_array<UInt32>(si.shape));
                     break;
+
+                case Type::IntegratorRGBA: {
+                    auto [inner_spec, inner_mask] 
+                        = m_integrators[inner_idx]->sample(scene, sampler, ray, medium, aovs, active);
+                    dr::disable_grad(inner_spec);
+
+                    Color3f rgb = spectrum_to_color3f(inner_spec, ray, active);
+
+                    aovs += m_integrators[inner_idx]->aov_names().size();
+                    *aovs_rgba_integrator++ = rgb.r();
+                    *aovs_rgba_integrator++ = rgb.g();
+                    *aovs_rgba_integrator++ = rgb.b();
+                    *aovs_rgba_integrator++ = dr::select(inner_mask, Float(1.f), Float(0.f));
+                    if (inner_idx == 0)
+                        result = {inner_spec, inner_mask};
+
+                    inner_idx++;
+                } break;
             }
         }
 
@@ -320,13 +359,17 @@ public:
         {
             aovs_image = Base::render(scene, sensor, seed, spp, develop, evaluate);
 
-            // AOVs image above includes film target base channels as well so get slice
+            // AOVs image above includes film target inner integrator channels as well so get slice
             // just with AOVs
-            size_t num_aovs = m_aov_names.size();
-            aovs_image = get_channels_slice(aovs_image, aovs_image.shape(2) - num_aovs, num_aovs);
+            size_t num_aovs = m_aov_names.size() - m_integrator_aovs_count;
+            if (develop)
+                aovs_image = get_channels_slice(aovs_image, aovs_image.shape(2) - num_aovs, num_aovs);
         }
 
-        return merge_channels(inner_images, aovs_image);
+        if (develop)
+            return merge_channels(inner_images, aovs_image);
+
+        return {};
     }
 
     TensorXf render_forward(Scene* scene,
@@ -335,18 +378,17 @@ public:
                             uint32_t seed = 0,
                             uint32_t spp = 0) override {
 
-        TensorXf aovs_grad;
-
         // Perform forward mode propagation just for AOV image
+        TensorXf aovs_grad;
         {
             TensorXf aovs_image = Base::render(scene, sensor, seed, spp);
 
-            // AOVs image above includes film target base channels as well so get slice
+            // AOVs image above includes film target inner integrator channels as well so get slice
             // just with AOVs
-            size_t num_aovs = m_aov_names.size();
+            size_t num_aovs = m_aov_names.size() - m_integrator_aovs_count;
             aovs_image = get_channels_slice(aovs_image, aovs_image.shape(2) - num_aovs, num_aovs);
 
-            // Perform an AD traversal of all registered AD variables that 
+            // Perform an AD traversal of all registered AD variables that
             // influence 'aovs_image' in a differentiable manner
             dr::forward_to(aovs_image.array());
 
@@ -367,8 +409,6 @@ public:
                          Sensor* sensor,
                          uint32_t seed = 0,
                          uint32_t spp = 0) override {
-
-        using Array = typename TensorXf::Array;
         size_t base_ch_count = sensor->film()->base_channels_count();
         auto [image_grads, aovs_grad] = split_channels(base_ch_count, grad_in);
 
@@ -376,9 +416,9 @@ public:
         {
             TensorXf aovs_image = Base::render(scene, sensor, seed, spp);
 
-            // AOVs image above includes film target base channels as well so get slice
+            // AOVs image above includes film target inner integrator channels as well so get slice
             // just with AOVs
-            size_t num_aovs = m_aov_names.size();
+            size_t num_aovs = m_aov_names.size() - m_integrator_aovs_count;
             aovs_image = get_channels_slice(aovs_image, aovs_image.shape(2) - num_aovs, num_aovs);
 
             dr::backward_from((aovs_image * aovs_grad).array());
@@ -427,7 +467,7 @@ protected:
 
         DynamicBuffer<UInt32> idx = dr::arange<DynamicBuffer<UInt32>>(slice_flat);
         DynamicBuffer<UInt32> pixel_idx = idx / num_channels;
-        DynamicBuffer<UInt32> channel_idx = dr::fmadd(pixel_idx, uint32_t(-(int)num_channels), idx) 
+        DynamicBuffer<UInt32> channel_idx = dr::fmadd(pixel_idx, uint32_t(-(int)num_channels), idx)
             + channel_offset;
 
         auto values_idx = dr::fmadd(pixel_idx, src.shape(2), channel_idx);
@@ -440,7 +480,7 @@ protected:
 
         DynamicBuffer<UInt32> idx = dr::arange<DynamicBuffer<UInt32>>(src_flat);
         DynamicBuffer<UInt32> pixel_idx = idx / src_shape[2];
-        DynamicBuffer<UInt32> dst_channel_idx = dr::fmadd(pixel_idx, uint32_t(-(int)src_shape[2]), idx) 
+        DynamicBuffer<UInt32> dst_channel_idx = dr::fmadd(pixel_idx, uint32_t(-(int)src_shape[2]), idx)
             + dst_channel_offset;
 
         uint32_t num_dst_channels = dst.shape(2);
@@ -453,7 +493,7 @@ protected:
     }
 
     /// Combine inner integrator images and AOVS image
-    TensorXf merge_channels(const std::vector<TensorXf>& inner_images, 
+    TensorXf merge_channels(const std::vector<TensorXf>& inner_images,
                             const TensorXf& aovs_image) const {
         using Array = typename TensorXf::Array;
 
@@ -462,7 +502,7 @@ protected:
         auto* aovs_image_shape = aovs_image.shape().data();
 
         // Figure out entire number of channels of combined image
-        size_t combined_shape[3] = { aovs_image_shape[0], aovs_image_shape[1], num_aovs };
+        size_t combined_shape[3] = { aovs_image_shape[0], aovs_image_shape[1], num_aovs - m_integrator_aovs_count };
         for (const auto& image : inner_images)
             combined_shape[2] += image.shape(2);
 
@@ -497,13 +537,14 @@ protected:
             channel_offset += image_channels;
         }
 
-        size_t num_aovs = m_aov_names.size();
+        size_t num_aovs = m_aov_names.size() - m_integrator_aovs_count;
         TensorXf aovs_image = get_channels_slice(combined_image, channel_offset, num_aovs);
 
         return { inner_images, aovs_image };
     }
 
 private:
+    size_t m_integrator_aovs_count;
     std::vector<Type> m_aov_types;
     std::vector<std::string> m_aov_names;
     std::vector<ref<Base>> m_integrators;
