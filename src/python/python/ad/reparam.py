@@ -412,10 +412,10 @@ def reparameterize_ray(scene: mitsuba.Scene,
                        rng: mitsuba.PCG32,
                        params: mitsuba.SceneParameters,
                        ray: mitsuba.RayDifferential3f,
-                       num_rays: int=4,
+                       num_rays: int=8,
                        kappa: float=1e5,
                        exponent: float=3.0,
-                       antithetic: bool=False,
+                       antithetic: bool=True,
                        unroll: bool=False,
                        active: mitsuba.Bool = True
 ) -> Tuple[mitsuba.Vector3f, mitsuba.Float]:

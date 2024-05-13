@@ -27,6 +27,8 @@ class PRBAcousticIntegrator(RBIntegrator):
         # Map -1 (infinity) to 2^32-1 bounces
         self.max_depth = max_depth if max_depth != -1 else 0xffffffff
 
+        self.kappa = props.get('kappa', 0)
+
         self.rr_depth = props.get('rr_depth', self.max_depth)
         if self.rr_depth <= 0:
             raise Exception("\"rr_depth\" must be set to a value greater than zero!")
@@ -69,6 +71,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 mode=dr.ADMode.Primal,
                 scene=scene,
                 sampler=sampler,
+                sensor=None,
                 ray=ray,
                 block=block,
                 δL=None,
@@ -147,7 +150,10 @@ class PRBAcousticIntegrator(RBIntegrator):
         if reparam is not None:
             with dr.resume_grad():
                 # Reparameterize the camera ray
-                _, reparam_det = reparam(ray=dr.detach(ray), depth=mi.UInt32(0))
+                reparam_d, reparam_det = reparam(ray=dr.detach(ray), depth=mi.UInt32(0))
+
+                # trafo = mi.Transform4f(sensor.world_transform())
+                # weight = mi.Spectrum(mi.warp.square_to_von_mises_fisher_pdf(trafo.inverse() @ reparam_d, self.kappa))
 
         return ray, weight, pos, reparam_det
 
@@ -267,6 +273,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta)
             )
 
+            # Intensity of current emitter weighted by importance (def. by prev bsdf hits)
             with dr.resume_grad(when=not primal):
                 Le = β * mis * ds.emitter.eval(si, active_next)
 
@@ -365,7 +372,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                         # TODO (MW): why not -t0 ...?
                         # attention: the seccond summand accounts for the direct light segment!
                         t0_diff = t0 * δLdG + t0_dir * δLdG_Lr_dir
-                    δLdG = δLdG - δL_Le - δL_Lr_dir
+                    δLdG = δLdG - δLdG_Le - δLdG_Lr_dir
 
             # put and accumulate current (differential) radiance
 
@@ -598,6 +605,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 mode=dr.ADMode.Primal,
                 scene=scene,
                 sampler=sampler.clone(),
+                sensor=sensor,
                 ray=ray,
                 block=block,
                 δL=δL,
@@ -612,6 +620,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 mode=dr.ADMode.Backward,
                 scene=scene,
                 sampler=sampler,
+                sensor=sensor,
                 ray=ray,
                 block=block,
                 δL=δL,
@@ -622,14 +631,14 @@ class PRBAcousticIntegrator(RBIntegrator):
             )
 
             # Propagate gradient image to sample positions if necessary
-            if reparam is not None:
-                with dr.resume_grad():
+            #if reparam is not None:
+                #with dr.resume_grad():
                     # After reparameterizing the camera ray, we need to evaluate
                     #   Σ (fi Li det)
                     #  ---------------
                     #   Σ (fi det)
-                    L[~valid] = 0.0
-                    dr.backward(dr.mean(L * weight * det))
+                    #L[~valid] = 0.0
+                    #dr.backward(dr.mean(L * weight * det)/dr.mean(det))
 
             # We don't need any of the outputs here
             del L, L_2, valid, valid_2, state_out_δLdG, state_out_δLdG_2, \

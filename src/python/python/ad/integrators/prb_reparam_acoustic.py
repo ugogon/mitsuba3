@@ -30,7 +30,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
         self.reparam_exp = props.get('reparam_exp', 3.0)
 
         # Enable antithetic sampling in the reparameterization?
-        self.reparam_antithetic = props.get('reparam_antithetic', False)
+        self.reparam_antithetic = props.get('reparam_antithetic', True)
 
         # Unroll the loop tracing auxiliary rays in the reparameterization?
         self.reparam_unroll = props.get('reparam_unroll', False)
@@ -51,7 +51,6 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             return dr.detach(ray.d, True), mi.Float(1)
 
         active = active & (depth < self.reparam_max_depth)
-
         return mi.ad.reparameterize_ray(scene, rng, params, ray,
                                         num_rays=self.reparam_rays,
                                         kappa=self.reparam_kappa,
@@ -64,6 +63,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                mode: dr.ADMode,
                scene: mi.Scene,
                sampler: mi.Sampler,
+               sensor: mi.Sensor,
                ray: mi.Ray3f,
                block: mi.ImageBlock,
                δL: Optional[mi.ImageBlock],
@@ -120,6 +120,9 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
         # costly synchronization when wavefront-style loops are generated)
         loop.set_max_iterations(self.max_depth)
 
+        if not primal:
+            trafo = mi.Transform4f(sensor.world_transform())
+
         while loop(active):
             active_next = mi.Bool(active)
 
@@ -146,7 +149,11 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                     ray_reparam.d, ray_reparam_det = reparam(
                         dr.select(first_vertex, ray_cur,
                                   si_prev.spawn_ray(ray_cur.d)), depth)
-                    ray_reparam_det[first_vertex] = 1
+
+                    # UF: I checked: weight is equal to sampled weight (sample_rays).
+                    vMF_weight = mi.Spectrum(mi.warp.square_to_von_mises_fisher_pdf(trafo.inverse() @ ray_reparam.d, self.kappa))
+                    weight = dr.select(first_vertex, vMF_weight, mi.Float(1.))
+                    # ray_reparam_det[first_vertex] = 1
 
                     # Finally, disable all derivatives in 'si_prev', as we are
                     # only interested in tracking derivatives related to the
@@ -194,6 +201,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                 em_ray_det = 1
 
                 if not primal:
+                    """"""
                     # Create a surface interaction that follows the shape's
                     # motion while ignoring any reparameterization from the
                     # previous ray. This ensures the subsequent reparameterization
@@ -241,6 +249,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
 
             t0_diff = mi.Float(0.)
             if δL is not None and self.track_time_derivatives:
+                """"""
                 # This is executed in the PRB primal and adjoint passes
                 active_time      = active & si_cur.is_valid()
                 active_time_next = active_em
@@ -282,9 +291,9 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                         t0_dir = dr.select(active_time_next, dr.norm(ds.p - si_cur.p), 0.)
 
                         # TODO (MW): why not -t0 ...?
-                        # attention: the seccond summand accounts for the direct light segment!
-                        t0_diff = t0 * δLdG + t0_dir * δLdG_Lr_dir
-                    δLdG = δLdG - δL_Le - δL_Lr_dir
+                        # attention: the second summand accounts for the direct light segment!
+                        t0_diff = t0 * δLdG + t0_dir * δLdG_Lr_dir * dr.detach(em_ray_det)
+                    δLdG = δLdG - δLdG_Le - δLdG_Lr_dir
 
             # put and accumulate current (differential) radiance
 
@@ -350,6 +359,7 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
             # ------------------ Differential phase only ------------------
 
             if not primal:
+                """"""
                 # Clone the sampler to run ahead in the random number sequence
                 # without affecting the PRB random walk
                 sampler_clone = sampler.clone()
@@ -460,7 +470,11 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
 
                     # Propagate derivatives from/to 'Lo' based on 'mode'
                     if mode == dr.ADMode.Backward:
-                        dr.backward_from(Lo + t0_diff)
+                        # I think this is only necessary for the first hit and non omnidirectional  mics
+                        first = dr.detach(Lo)*weight.x/dr.detach(weight.x)
+                        vMFcontrib = dr.select(first_vertex, first, mi.Float(0.))
+
+                        dr.backward_from(Lo + t0_diff * dr.detach(ray_reparam_det) + vMFcontrib)
                     else:
                         # TODO: next term is missing
                         if dr.grad_enabled(Le * ray_reparam_det):
