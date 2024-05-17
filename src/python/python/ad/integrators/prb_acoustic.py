@@ -147,10 +147,10 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         reparam_det = 1.0
 
-        if reparam is not None:
-            with dr.resume_grad():
+        # if reparam is not None:
+        #     with dr.resume_grad():
                 # Reparameterize the camera ray
-                reparam_d, reparam_det = reparam(ray=dr.detach(ray), depth=mi.UInt32(0))
+                # reparam_d, reparam_det = reparam(ray=dr.detach(ray), depth=mi.UInt32(0))
 
                 # trafo = mi.Transform4f(sensor.world_transform())
                 # weight = mi.Spectrum(mi.warp.square_to_von_mises_fisher_pdf(trafo.inverse() @ reparam_d, self.kappa))
@@ -590,11 +590,10 @@ class PRBAcousticIntegrator(RBIntegrator):
             # derivatives wrt. sample positions ('pos') if there are any
             ray, weight, _, det = self.sample_rays(scene, sensor,
                                                      sampler, reparam)
-
             δL = mi.ImageBlock(grad_in,
                                rfilter=film.rfilter(),
                                border=film.sample_border(),
-                               y_only=hasattr(self, 'reparam'))
+                               y_only=True)
 
             # # Clear the dummy data splatted on the film above
             # film.clear()
@@ -614,7 +613,7 @@ class PRBAcousticIntegrator(RBIntegrator):
                 reparam=None,
                 active=mi.Bool(True)
             )
-
+            
             # Launch Monte Carlo sampling in backward AD mode (2)
             L_2, valid_2, state_out_δLdG_2 = self.sample(
                 mode=dr.ADMode.Backward,
