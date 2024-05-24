@@ -61,7 +61,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             )
 
             # Generate a set of rays starting at the sensor
-            ray, weight, _, _ = self.sample_rays(scene, sensor, sampler)
+            ray, weight = self.sample_rays(scene, sensor, sampler)
 
             # Prepare an ImageBlock as specified by the film
             block = film.create_block()
@@ -74,9 +74,9 @@ class PRBAcousticIntegrator(RBIntegrator):
                 sensor=None,
                 ray=ray,
                 block=block,
-                δL=None,
-                state_in_δL=None,
-                state_in_δLdG=None,
+                δH=None,
+                state_in_δHL=None,
+                state_in_δHdT=None,
                 reparam=None,
                 active=mi.Bool(True)
             )
@@ -110,22 +110,19 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         spp = sampler.sample_count()
 
-        # Compute discrete sample position
-        idx = dr.arange(mi.UInt32, film_size.x * spp) #dr.prod(film_size) * spp)
+        wavelength_sample = mi.Float(0.)
+        if film_size.x > 1:
+            # Compute discrete sample position
+            idx = dr.arange(mi.UInt32, film_size.x * spp) #dr.prod(film_size) * spp)
 
-        # Try to avoid a division by an unknown constant if we can help it
-        log_spp = dr.log2i(spp)
-        if 1 << log_spp == spp:
-            idx >>= dr.opaque(mi.UInt32, log_spp)
-        else:
-            idx //= dr.opaque(mi.UInt32, spp)
+            # Try to avoid a division by an unknown constant if we can help it
+            log_spp = dr.log2i(spp)
+            if 1 << log_spp == spp:
+                idx >>= dr.opaque(mi.UInt32, log_spp)
+            else:
+                idx //= dr.opaque(mi.UInt32, spp)
 
-        # Compute the position on the image plane
-        pos = mi.Vector2i(idx, 0 * idx)
-
-        # Re-scale the position to [0, 1]^2
-        scale = dr.rcp(mi.ScalarVector2f(film_size))
-        pos_adjusted = mi.Vector2f(pos) * scale
+            wavelength_sample = mi.Float(idx)
 
         aperture_sample = mi.Vector2f(0.0)
         if sensor.needs_aperture_sample():
@@ -133,29 +130,15 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         time = 0.0 # sensor.shutter_open()
 
-        wavelength_sample = 0.
-        if mi.is_spectral:
-            wavelength_sample = mi.Float(idx) + 1.0
-
         with dr.resume_grad():
             ray, weight = sensor.sample_ray_differential(
                 time=time,
                 sample1=wavelength_sample,
-                sample2=pos_adjusted,
+                sample2=aperture_sample,
                 sample3=aperture_sample
             )
 
-        reparam_det = 1.0
-
-        # if reparam is not None:
-        #     with dr.resume_grad():
-                # Reparameterize the camera ray
-                # reparam_d, reparam_det = reparam(ray=dr.detach(ray), depth=mi.UInt32(0))
-
-                # trafo = mi.Transform4f(sensor.world_transform())
-                # weight = mi.Spectrum(mi.warp.square_to_von_mises_fisher_pdf(trafo.inverse() @ reparam_d, self.kappa))
-
-        return ray, weight, pos, reparam_det
+        return ray, weight
 
     def prepare(self,
                 sensor: mi.Sensor,
@@ -195,18 +178,22 @@ class PRBAcousticIntegrator(RBIntegrator):
                mode: dr.ADMode,
                scene: mi.Scene,
                sampler: mi.Sampler,
+               sensor: mi.Sensor,
                ray: mi.Ray3f,
                block: mi.ImageBlock,
-               δL: Optional[mi.ImageBlock],
-               state_in_δL: Optional[mi.Spectrum],
-               state_in_δLdG: Optional[mi.Spectrum],
+               δH: Optional[mi.ImageBlock],
+               state_in_δHL: Optional[mi.Spectrum],
+               state_in_δHdT: Optional[mi.Spectrum],
                active: mi.Bool,
+               reparam: Optional[
+                   Callable[[mi.Ray3f, mi.Bool], Tuple[mi.Ray3f, mi.Float]]],
                **_ # Absorbs unused arguments
     ) -> Tuple[mi.Spectrum, mi.Bool, mi.Spectrum]:
 
         # Rendering a primal image? (vs performing forward/reverse-mode AD)
+        prb_mode = δH is not None
         primal = mode == dr.ADMode.Primal
-        prb_mode = δL is not None and state_in_δL is not None and state_in_δLdG is not None
+        adjoint = prb_mode and (mode == dr.ADMode.Backward or mode == dr.ADMode.Forward)
         assert primal or prb_mode
 
         # Standard BSDF evaluation context for path tracing
@@ -220,8 +207,8 @@ class PRBAcousticIntegrator(RBIntegrator):
         # Copy input arguments to avoid mutating the caller's state
         ray = mi.Ray3f(dr.detach(ray))
         depth = mi.UInt32(0)                               # Depth of current vertex
-        L    = mi.Spectrum(0 if primal else state_in_δL)   # Radiance accumulator
-        δLdG = mi.Spectrum(0 if primal else state_in_δLdG) # Radiance * Gaussian accumulator
+        δHL  = mi.Spectrum(0) if primal else state_in_δHL  # Integral of grad_in * Radiance (accumulated)
+        δHdT = mi.Spectrum(0) if primal else state_in_δHdT # Integral of grad_in * (Radiance derived wrt time) (accumulated)
         β = mi.Spectrum(1)                                 # Path throughput weight
         η = mi.Float(1)                                    # Index of refraction
         active = mi.Bool(active)                           # Active SIMD lanes
@@ -235,7 +222,7 @@ class PRBAcousticIntegrator(RBIntegrator):
         # TODO: loop should keep track of imageblock and δL
         loop = mi.Loop(name="PRB Acoustic (%s)" % mode.name,
                        state=lambda: (distance, #block.tensor(),
-                                      sampler, ray, depth, L, δLdG, #δL.tensor(),
+                                      sampler, ray, depth, δHL, δHdT, #δL.tensor(),
                                       β, η, active,
                                       prev_si, prev_bsdf_pdf, prev_bsdf_delta))
 
@@ -291,7 +278,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             active_em &= dr.neq(ds.pdf, 0.0)
 
             with dr.resume_grad(when=not primal):
-                if not primal:
+                if adjoint:
                     # Given the detached emitter sample, *recompute* its
                     # contribution with AD to enable light source optimization
                     ds.d = dr.replace_grad(ds.d, dr.normalize(ds.p - si.p))
@@ -327,8 +314,8 @@ class PRBAcousticIntegrator(RBIntegrator):
             # ---- PRB-style tracking of time derivatives -----
             # TODO (MW): Move to function of `prb_acoustic`?
 
-            t0_diff = mi.Float(0.)
-            if δL is not None and self.track_time_derivatives:
+            δHdTt_cur = mi.Float(0.)
+            if prb_mode and self.track_time_derivatives:
                 # This is executed in the PRB primal and adjoint passes
                 active_time      = active & si.is_valid()
                 active_time_next = active_em
@@ -340,62 +327,55 @@ class PRBAcousticIntegrator(RBIntegrator):
                                       dr.detach(distance + dr.norm(ds.p - si.p)), 0.)
                     dr.enable_grad(T, T_dir)
 
-                    Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                    Le_pos     = mi.Point2f(ray.wavelengths.x,
                                             block.size().y * T / max_distance)
-                    Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                    Lr_dir_pos = mi.Point2f(ray.wavelengths.x,
                                             block.size().y * T_dir / max_distance)
 
-                    δL_Le     = δL.read(pos=Le_pos)[0]
-                    δL_Lr_dir = δL.read(pos=Lr_dir_pos)[0]
+                    δHLe     = dr.detach(Le)     * δH.read(pos=Le_pos)[0]
+                    δHLr_dir = dr.detach(Lr_dir) * δH.read(pos=Lr_dir_pos)[0]
 
                     dr.forward_from(T)
                     dr.forward_from(T_dir)
 
-                    δLdG_Le     = dr.detach(dr.grad(δL_Le))
-                    δLdG_Lr_dir = dr.detach(dr.grad(δL_Lr_dir))
-
-                # TODO (MW): Verify the multiplication with energy (should be 1 here, luckily)
-                # TODO (MW): How to track changes of the emitter radiance?
-                δLdG_Le     = dr.detach(Le)     * δLdG_Le
-                δLdG_Lr_dir = dr.detach(Lr_dir) * δLdG_Lr_dir
+                    δHdTLe = dr.detach(dr.grad(δHLe))
+                    δHdTLr_dir = dr.detach(dr.grad(δHLr_dir))
 
                 if primal:
                     # PRB primal
-                    δLdG = δLdG + δLdG_Le + δLdG_Lr_dir
-                elif mode == dr.ADMode.Backward:
+                    δHdT = δHdT + δHdTLe + δHdTLr_dir
+                elif adjoint:
                     # PRB adjoint (backward)
                     with dr.resume_grad():
                         # The surface interaction can be invalid, in which case we don't want it to have any influence
-                        t0     = dr.select(active_time,      si.t,                 0.)
-                        t0_dir = dr.select(active_time_next, dr.norm(ds.p - si.p), 0.)
+                        t_cur     = dr.select(active_time,      si.t,                 0.)
+                        #t_cur_dir = dr.select(active_time_next, dr.norm(em_ray.o - si.p), 0.)
+                        t_cur_dir = dr.select(active_time_next, dr.norm(ds.p - si.p), 0.)
 
-                        # TODO (MW): why not -t0 ...?
-                        # attention: the seccond summand accounts for the direct light segment!
-                        t0_diff = t0 * δLdG + t0_dir * δLdG_Lr_dir
-                    δLdG = δLdG - δLdG_Le - δLdG_Lr_dir
+                        # attention: the second summand accounts for the direct light segment!
+                        δHdTt_cur = t_cur * δHdT + t_cur_dir * δHdTLr_dir
+                    δHdT = δHdT - δHdTLe - δHdTLr_dir
 
             # put and accumulate current (differential) radiance
 
-            Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+            Le_pos     = mi.Point2f(ray.wavelengths.x,
                                     block.size().y * distance / max_distance)
-            Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+            Lr_dir_pos = mi.Point2f(ray.wavelengths.x,
                                     block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
-
-            if mode == dr.ADMode.Forward:
-                δL.put(pos=Le_pos,     values=mi.Vector2f((L * Le    ).x, 1.0))
-                δL.put(pos=Lr_dir_pos, values=mi.Vector2f((L * Lr_dir).x, 1.0))
-                L = L + Le + Lr_dir
-            elif δL is not None:
+            if prb_mode:
+                # backward_from(δHLx) is the same as splatting_and_backward_gradient_image but we can store it this way
                 with dr.resume_grad(when=not primal):
-                    Le     = Le     * δL.read(pos=Le_pos)[0]
-                    Lr_dir = Lr_dir * δL.read(pos=Lr_dir_pos)[0]
-
-            if primal:
+                    δHLe     = Le     * δH.read(pos=Le_pos)[0]
+                    δHLr_dir = Lr_dir * δH.read(pos=Lr_dir_pos)[0]
+                δHL_prev = δHL
+                if primal:
+                    δHL = δHL + δHLe + δHLr_dir
+                else: # adjoint:
+                    δHL = δHL - δHLe - δHLr_dir
+            else: # primal
                 block.put(pos=Le_pos,     values=mi.Vector2f(Le.x,     1.0), active=(Le.x     > 0.))
                 block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.))
-                L = L + Le + Lr_dir
-            elif mode == dr.ADMode.Backward:
-                L = L - Le - Lr_dir
+
 
             # -------------------- Stopping criterion ---------------------
 
@@ -425,17 +405,17 @@ class PRBAcousticIntegrator(RBIntegrator):
                     bsdf_val = bsdf.eval(bsdf_ctx, si, wo, active_next)
 
                     # Detached version of the above term and inverse
-                    bsdf_val_det = bsdf_weight * bsdf_sample.pdf
-                    inv_bsdf_val_det = dr.select(dr.neq(bsdf_val_det, 0),
-                                                 dr.rcp(bsdf_val_det), 0)
+                    bsdf_val_detach = bsdf_weight * bsdf_sample.pdf
+                    inv_bsdf_val_detach = dr.select(dr.neq(bsdf_val_detach, 0),
+                                                    dr.rcp(bsdf_val_detach), 0)
 
                     # Differentiable version of the reflected indirect radiance
-                    Lr_ind = dr.replace_grad(1, inv_bsdf_val_det * bsdf_val)
+                    δHLr_ind = δHL * dr.replace_grad(1, inv_bsdf_val_detach * bsdf_val)
 
                     # Differentiable Monte Carlo estimate of all contributions
-                    Lo = Le + Lr_dir + L * Lr_ind
+                    δHLo = δHLe + δHLr_dir + δHLr_ind
 
-                    if dr.flag(dr.JitFlag.VCallRecord) and not dr.grad_enabled(Lo):
+                    if dr.flag(dr.JitFlag.VCallRecord) and not dr.grad_enabled(δHLo):
                         raise Exception(
                             "The contribution computed by the differential "
                             "rendering phase is not attached to the AD graph! "
@@ -448,110 +428,16 @@ class PRBAcousticIntegrator(RBIntegrator):
 
                     # Propagate derivatives from/to 'Lo' based on 'mode'
                     if mode == dr.ADMode.Backward:
-                        dr.backward_from(Lo + t0_diff)
-                    else:
-                        if dr.grad_enabled(Le):
-                            δL.put(pos=Le_pos,
-                                   values=mi.Vector2f(dr.forward_to(Le).x, 1.0))
-                        if dr.grad_enabled(Lr_dir):
-                            δL.put(pos=Lr_dir_pos,
-                                   values=mi.Vector2f(dr.forward_to(Lr_dir).x, 1.0))
-                        if dr.grad_enabled(Lr_ind):
-                            L = L + dr.forward_to(Lr_ind)
+                        dr.backward_from(δHLo + δHdTt_cur)
 
             depth[si.is_valid()] += 1
             active = active_next
 
         return (
-            L if primal else δL, # Radiance/differential radiance
-            dr.neq(depth, 0),    # Ray validity flag for alpha blending
-            δLdG                 # State for the differential phase
+            δHL,                   # Radiance/differential radiance
+            dr.neq(depth, 0),      # Ray validity flag for alpha blending
+            δHdT                   # State for the differential phase
         )
-
-    def render_forward(self: mi.SamplingIntegrator,
-                       scene: mi.Scene,
-                       params: Any,
-                       sensor: Union[int, mi.Sensor] = 0,
-                       seed: int = 0,
-                       spp: int = 0) -> mi.TensorXf:
-
-        mi.Log(mi.LogLevel.Warn,
-               "Acoustic Forward Mode is untested and probably "
-               "biased, especially when using reparam!")
-
-        if isinstance(sensor, int):
-            sensor = scene.sensors()[sensor]
-
-        film = sensor.film()
-        aovs = self.aovs()
-
-        # Disable derivatives in all of the following
-        with dr.suspend_grad():
-            # Prepare the film and sample generator for rendering
-            sampler, spp = self.prepare(sensor, seed, spp, aovs)
-
-            # When the underlying integrator supports reparameterizations,
-            # perform necessary initialization steps and wrap the result using
-            # the _ReparamWrapper abstraction defined above
-            if hasattr(self, 'reparam'):
-                reparam = _ReparamWrapper(
-                    scene=scene,
-                    params=params,
-                    reparam=self.reparam,
-                    wavefront_size=sampler.wavefront_size(),
-                    seed=seed
-                )
-            else:
-                reparam = None
-
-            # Generate a set of rays starting at the sensor, keep track of
-            # derivatives wrt. sample positions ('pos') if there are any
-            ray, weight, _, det = self.sample_rays(scene, sensor,
-                                                     sampler, reparam)
-
-            δL, valid, L, δLdG = self.sample(
-                mode=dr.ADMode.Forward,
-                scene=scene,
-                sampler=sampler,
-                ray=ray,
-                block=film.create_block(),
-                δL=film.create_block(),
-                state_in_δL=mi.Spectrum(0.),
-                state_in_δLdG=mi.Spectrum(0.),
-                reparam=reparam,
-                active=mi.Bool(True)
-            )
-
-            sample_pos_deriv = None # disable by default
-
-            with dr.resume_grad():
-                if True and reparam is not None:
-                    L[~valid] = 0.0
-                    sample_pos_deriv = dr.mean(L.x * weight.x * det)
-
-                    # Compute the derivative of the reparameterized image ..
-                    dr.forward_to(sample_pos_deriv, flags=dr.ADFlag.ClearInterior | dr.ADFlag.ClearEdges)
-
-                    dr.schedule(sample_pos_deriv, dr.grad(sample_pos_deriv))
-
-            film.put_block(δL)
-
-            # Explicitly delete any remaining unused variables
-            del sampler, ray, weight, L, valid, δL, params #, state_out, pos
-
-            # Probably a little overkill, but why not.. If there are any
-            # DrJit arrays to be collected by Python's cyclic GC, then
-            # freeing them may enable loop simplifications in dr.eval().
-            gc.collect()
-
-            result_grad = film.develop()
-
-            # Potentially add the derivative of the reparameterized samples
-            if sample_pos_deriv is not None:
-                with dr.resume_grad():
-                    result_grad += dr.grad(sample_pos_deriv)
-
-        return result_grad
 
     def render_backward(self: mi.SamplingIntegrator,
                         scene: mi.Scene,
@@ -588,60 +474,49 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # Generate a set of rays starting at the sensor, keep track of
             # derivatives wrt. sample positions ('pos') if there are any
-            ray, weight, _, det = self.sample_rays(scene, sensor,
+            ray, weight = self.sample_rays(scene, sensor,
                                                      sampler, reparam)
-            δL = mi.ImageBlock(grad_in,
+            δH = mi.ImageBlock(grad_in,
                                rfilter=film.rfilter(),
                                border=film.sample_border(),
                                y_only=True)
-
             # # Clear the dummy data splatted on the film above
             # film.clear()
             block = film.create_block()
 
             # Launch the Monte Carlo sampling process in primal mode (1)
-            L, valid, state_out_δLdG = self.sample(
+            δHL, valid, δHdT = self.sample(
                 mode=dr.ADMode.Primal,
                 scene=scene,
                 sampler=sampler.clone(),
                 sensor=sensor,
                 ray=ray,
                 block=block,
-                δL=δL,
-                state_in_δL=None,
-                state_in_δLdG=None,
+                δH=δH,
+                state_in_δHL=None,
+                state_in_δHdT=None,
                 reparam=None,
                 active=mi.Bool(True)
             )
-            
+
             # Launch Monte Carlo sampling in backward AD mode (2)
-            L_2, valid_2, state_out_δLdG_2 = self.sample(
+            L_2, valid_2, state_out_δHdT_2 = self.sample(
                 mode=dr.ADMode.Backward,
                 scene=scene,
                 sampler=sampler,
                 sensor=sensor,
                 ray=ray,
                 block=block,
-                δL=δL,
-                state_in_δL=L,
-                state_in_δLdG=state_out_δLdG,
+                δH=δH,
+                state_in_δHL=δHL,
+                state_in_δHdT=δHdT,
                 reparam=reparam,
                 active=mi.Bool(True)
             )
 
-            # Propagate gradient image to sample positions if necessary
-            #if reparam is not None:
-                #with dr.resume_grad():
-                    # After reparameterizing the camera ray, we need to evaluate
-                    #   Σ (fi Li det)
-                    #  ---------------
-                    #   Σ (fi det)
-                    #L[~valid] = 0.0
-                    #dr.backward(dr.mean(L * weight * det)/dr.mean(det))
-
             # We don't need any of the outputs here
-            del L, L_2, valid, valid_2, state_out_δLdG, state_out_δLdG_2, \
-                ray, weight, det, sampler #, pos
+            del δHL, L_2, valid, valid_2, δHdT, state_out_δHdT_2, \
+                ray, weight, sampler #, pos
 
             gc.collect()
 
