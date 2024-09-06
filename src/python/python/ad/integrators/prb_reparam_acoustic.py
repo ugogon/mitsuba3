@@ -513,4 +513,4 @@ class PRBReparamAcousticIntegrator(PRBAcousticIntegrator):
                f' rr_depth = { self.rr_depth },' \
                f' reparam_rays = { self.reparam_rays }]'
 
-mi.register_integrator("prb_reparam_acoustic", lambda props: PRBReparamAcousticIntegrator(props))
+# mi.register_integrator("prb_reparam_acoustic", lambda props: PRBReparamAcousticIntegrator(props))
