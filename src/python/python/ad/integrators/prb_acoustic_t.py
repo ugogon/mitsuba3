@@ -321,9 +321,9 @@ class PRBAcoustictIntegrator(RBIntegrator):
                                       dr.detach(distance + dr.norm(ds.p - si.p)), 0.)
                     dr.enable_grad(T, T_dir)
 
-                    Le_pos     = mi.Point2f(ray.wavelengths.x,
+                    Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                             block.size().y * T / max_distance)
-                    Lr_dir_pos = mi.Point2f(ray.wavelengths.x,
+                    Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                             block.size().y * T_dir / max_distance)
 
                     δHLe     = dr.detach(Le)     * δH.read(pos=Le_pos)[0]
@@ -352,9 +352,9 @@ class PRBAcoustictIntegrator(RBIntegrator):
 
             # put and accumulate current (differential) radiance
 
-            Le_pos     = mi.Point2f(ray.wavelengths.x,
+            Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * distance / max_distance)
-            Lr_dir_pos = mi.Point2f(ray.wavelengths.x,
+            Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
             if prb_mode:
                 # backward_from(δHLx) is the same as splatting_and_backward_gradient_image but we can store it this way

@@ -110,19 +110,25 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         spp = sampler.sample_count()
 
-        wavelength_sample = mi.Float(0.)
-        if film_size.x > 1:
-            # Compute discrete sample position
-            idx = dr.arange(mi.UInt32, film_size.x * spp) #dr.prod(film_size) * spp)
+        # In the acoustic setting, film_size.x = number of wavelengths * number of microphones 
+        # (the latter can be > 1 for batch sensors)
 
-            # Try to avoid a division by an unknown constant if we can help it
-            log_spp = dr.log2i(spp)
-            if 1 << log_spp == spp:
-                idx >>= dr.opaque(mi.UInt32, log_spp)
-            else:
-                idx //= dr.opaque(mi.UInt32, spp)
+        # Compute discrete sample position
+        idx = dr.arange(mi.UInt32, film_size.x * spp) #dr.prod(film_size) * spp)
 
-            wavelength_sample = mi.Float(idx)
+        # Try to avoid a division by an unknown constant if we can help it
+        log_spp = dr.log2i(spp)
+        if 1 << log_spp == spp:
+            idx >>= dr.opaque(mi.UInt32, log_spp)
+        else:
+            idx //= dr.opaque(mi.UInt32, spp)
+
+        # Compute the position on the image plane
+        pos = mi.Vector2i(idx, 0 * idx)
+
+        # Re-scale the position to [0, 1]^2
+        scale = dr.rcp(mi.ScalarVector2f(film_size))
+        pos_adjusted = mi.Vector2f(pos) * scale
 
         aperture_sample = mi.Vector2f(0.0)
         if sensor.needs_aperture_sample():
@@ -130,11 +136,21 @@ class PRBAcousticIntegrator(RBIntegrator):
 
         time = 0.0 # sensor.shutter_open()
 
+        # NOTE (MW): The spectrum indexing is assumed to be 1-based in the scene construction.
+        #            If we change it here, we also have to change the Python scripts and notebooks.
+        # FIXME (MW): Why was this set to 0 if the indexing is 1-based (and we are subtracting 1 from ray.wavelengths.x)?
+        #             Maybe because it doesn't matter as mi.is_spectral is true for acoustic..
+        wavelength_sample = 0. 
+        if mi.is_spectral:
+            # FIXME (MW): This wavelength sampling scheme is broken for batch sensors,
+            #             because in this case `idx` does not correspond to a wavelength.
+            wavelength_sample = mi.Float(idx) + 1.0
+
         with dr.resume_grad():
             ray, weight = sensor.sample_ray_differential(
                 time=time,
                 sample1=wavelength_sample,
-                sample2=aperture_sample,
+                sample2=pos_adjusted,
                 sample3=aperture_sample
             )
 
@@ -327,9 +343,9 @@ class PRBAcousticIntegrator(RBIntegrator):
                                       dr.detach(distance + dr.norm(ds.p - si.p)), 0.)
                     dr.enable_grad(T, T_dir)
 
-                    Le_pos     = mi.Point2f(ray.wavelengths.x,
+                    Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                             block.size().y * T / max_distance)
-                    Lr_dir_pos = mi.Point2f(ray.wavelengths.x,
+                    Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                             block.size().y * T_dir / max_distance)
 
                     δHLe     = dr.detach(Le)     * δH.read(pos=Le_pos)[0]
@@ -358,9 +374,9 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # put and accumulate current (differential) radiance
 
-            Le_pos     = mi.Point2f(ray.wavelengths.x,
+            Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * distance / max_distance)
-            Lr_dir_pos = mi.Point2f(ray.wavelengths.x,
+            Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                     block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
             if prb_mode:
                 # backward_from(δHLx) is the same as splatting_and_backward_gradient_image but we can store it this way

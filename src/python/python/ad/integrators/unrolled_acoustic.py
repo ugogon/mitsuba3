@@ -276,9 +276,9 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                                                            sampler.next_2d(),
                                                            active_next)
 
-                Le_pos     = mi.Point2f(ray.wavelengths.x,
+                Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                         block.size().y * distance / max_distance)
-                Lr_dir_pos = mi.Point2f(ray.wavelengths.x,
+                Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                         block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
                 block.put(pos=Le_pos,     values=mi.Vector2f(Le.x,     1.0), active=(Le.x     > 0.))
                 block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.))
