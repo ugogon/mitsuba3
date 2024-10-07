@@ -224,11 +224,11 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                 si = scene.ray_intersect(ray,
                                          ray_flags=mi.RayFlags.All,
                                          coherent=dr.eq(depth, 0))
-
-                distance += si.t
+                
+                τ = si.t
 
                 # Get the BSDF, potentially computes texture-space differentials
-                bsdf = si.bsdf(ray)
+                bsdf: mi.BSDF = si.bsdf(ray)
 
                 # ---------------------- Direct emission ----------------------
 
@@ -241,13 +241,19 @@ class UnrolledAcousticIntegrator(RBIntegrator):
 
                 mis = mis_weight(
                     prev_bsdf_pdf,
-                    scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta)
+                    dr.detach(scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta))
                 )
 
                 # Intensity of current emitter weighted by importance (def. by prev bsdf hits)
                 Le = β * mis * ds.emitter.eval(si, active_next)
 
-                # ---------------------- Emitter sampling ----------------------
+                # Store (direct) intensity to the image block
+                T      = distance + τ
+                Le_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                    block.size().y * T / max_distance)
+                block.put(pos=Le_pos, values=mi.Vector2f(Le.x, 1.0), active=active_next & (Le.x > 0))
+
+                # ---------------------- Detached emitter sampling ----------------------
 
                 # Should we continue tracing to reach one more vertex?
                 active_next &= (depth + 1 < self.max_depth) & si.is_valid()
@@ -257,35 +263,54 @@ class UnrolledAcousticIntegrator(RBIntegrator):
 
                 # If so, randomly sample an emitter without derivative tracking.
                 with dr.suspend_grad():
-                    ds, em_weight = scene.sample_emitter_direction(
-                        si, sampler.next_2d(), True, active_em)
+                    ds, em_weight = scene.sample_emitter_direction(si, sampler.next_2d(), True, active_em)
+
+                # Retrace the ray towards the emitter because ds is directly sampled
+                # from the emitter shape instead of tracing a ray against it.
+                # This contradicts the definition of "detached sampling of *directions*"
+                si_em       = scene.ray_intersect(si.spawn_ray(ds.d), active=active_em)
+                ds_attached = mi.DirectionSample3f(scene, si_em, ref=si)
+                ds_attached.pdf, ds_attached.delta = (ds.pdf, ds.delta)
+                ds = ds_attached
+
+                # The sampled emitter direction and the pdf must be detached
+                # Recompute `em_weight = em_val / ds.pdf` with only `em_val` attached
+                dr.disable_grad(ds.d, ds.pdf)
+                em_val    = scene.eval_emitter_direction(si, ds, active_em)
+                em_weight = dr.replace_grad(em_weight, dr.select(dr.neq(ds.pdf, 0), em_val / ds.pdf, 0))
 
                 active_em &= dr.neq(ds.pdf, 0.0)
 
-                # Evaluate BSDF * cos(theta) differentiably
+                # Evaluate BSDF * cos(theta) differentiably (and detach the bsdf pdf)
                 wo = si.to_local(ds.d)
                 bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
+                dr.disable_grad(bsdf_pdf_em)
                 mis_em = dr.select(ds.delta, 1, mis_weight(ds.pdf, bsdf_pdf_em))
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
 
+                # Store (emission sample) intensity to the image block
+                τ_dir      = ds.dist
+                T_dir      = distance + τ + τ_dir
+                Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                        block.size().y * T_dir / max_distance)
+                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=active_em & (Lr_dir.x > 0))
+
                 # ------------------ Detached BSDF sampling -------------------
 
-                with dr.suspend_grad():
-                    bsdf_sample, bsdf_weight = bsdf.sample(bsdf_ctx, si,
-                                                           sampler.next_1d(),
-                                                           sampler.next_2d(),
-                                                           active_next)
-
-                Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                        block.size().y * distance / max_distance)
-                Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                        block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
-                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x,     1.0), active=(Le.x     > 0.))
-                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.))
+                bsdf_sample, bsdf_weight = bsdf.sample(bsdf_ctx, si,
+                                                    sampler.next_1d(),
+                                                    sampler.next_2d(),
+                                                    active_next)
+                
+                # The sampled bsdf direction and the pdf must be detached
+                # Recompute `bsdf_weight = bsdf_val / bsdf_sample.pdf` with only `bsdf_val` attached
+                dr.disable_grad(bsdf_sample.wo, bsdf_sample.pdf)
+                bsdf_val    = bsdf.eval(bsdf_ctx, si, bsdf_sample.wo, active_next)
+                bsdf_weight = dr.replace_grad(bsdf_weight, dr.select(dr.neq(bsdf_sample.pdf, 0), bsdf_val / bsdf_sample.pdf, 0))
 
                 # ---- Update loop variables based on current interaction -----
 
-                ray = si.spawn_ray(si.to_world(bsdf_sample.wo))
+                ray = si.spawn_ray(dr.detach(si.to_world(bsdf_sample.wo))) # The direction in *world space* is detached
                 η *= bsdf_sample.eta
                 β *= bsdf_weight
 
@@ -294,6 +319,7 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                 prev_si = si
                 prev_bsdf_pdf = bsdf_sample.pdf
                 prev_bsdf_delta = mi.has_flag(bsdf_sample.sampled_type, mi.BSDFFlags.Delta)
+                distance = T
 
                 # -------------------- Stopping criterion ---------------------
 
