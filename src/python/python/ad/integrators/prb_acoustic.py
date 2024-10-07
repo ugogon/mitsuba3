@@ -223,8 +223,8 @@ class PRBAcousticIntegrator(RBIntegrator):
         # Copy input arguments to avoid mutating the caller's state
         ray = mi.Ray3f(dr.detach(ray))
         depth = mi.UInt32(0)                               # Depth of current vertex
-        δHL  = mi.Spectrum(0) if primal else state_in_δHL  # Integral of grad_in * Radiance (accumulated)
-        δHdT = mi.Spectrum(0) if primal else state_in_δHdT # Integral of grad_in * (Radiance derived wrt time) (accumulated)
+        δHL    = mi.Spectrum(0) if primal else state_in_δHL  # Integral of grad_in * Radiance (accumulated)
+        δHdLdT = mi.Spectrum(0) if primal else state_in_δHdT # Integral of grad_in * (Radiance derived wrt time) (accumulated)
         β = mi.Spectrum(1)                                 # Path throughput weight
         η = mi.Float(1)                                    # Index of refraction
         active = mi.Bool(active)                           # Active SIMD lanes
@@ -235,11 +235,24 @@ class PRBAcousticIntegrator(RBIntegrator):
         prev_bsdf_pdf   = mi.Float(0.) if self.skip_direct else mi.Float(1.)
         prev_bsdf_delta = mi.Bool(True)
 
+        # Helper functions for time derivatives
+        def compute_δH_dot_dLedT(Le: mi.Spectrum, T: mi.Float, ray: mi.Ray3f, active: mi.Mask):
+            with dr.resume_grad():
+                dr.enable_grad(T)
+                pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0), block.size().y * T / max_distance)
+                δHL = dr.detach(Le) * δH.read(pos=pos, active=active)[0]
+
+                dr.forward_from(T)
+                δHdLedT = dr.detach(dr.grad(δHL))
+                dr.disable_grad(T)
+                    
+            return δHdLedT
+
         # Record the following loop in its entirety
         # TODO: loop should keep track of imageblock and δL
         loop = mi.Loop(name="PRB Acoustic (%s)" % mode.name,
                        state=lambda: (distance, #block.tensor(),
-                                      sampler, ray, depth, δHL, δHdT, #δL.tensor(),
+                                      sampler, ray, depth, δHL, δHdLdT, #δL.tensor(),
                                       β, η, active,
                                       prev_ray, prev_pi, prev_bsdf_pdf, prev_bsdf_delta))
 
@@ -251,7 +264,7 @@ class PRBAcousticIntegrator(RBIntegrator):
             active_next = mi.Bool(active)
 
             # The first path vertex requires some special handling (see below)
-            first_vertex = dr.eq(depth, 0)
+            first_vertex = dr.eq(depth, 0)            
 
             # Compute a surface interaction that tracks derivatives arising
             # from differentiable shape parameters (position, normals, etc.)
@@ -284,6 +297,16 @@ class PRBAcousticIntegrator(RBIntegrator):
             with dr.resume_grad(when=not primal):
                 Le = β * mis * ds.emitter.eval(si, active_next)
 
+
+            with dr.resume_grad(when=not primal):
+                τ = dr.select(first_vertex, si.t, dr.norm(si.p - prev_si.p))
+
+            # 
+            T       = distance + τ
+
+            δHdLedT = compute_δH_dot_dLedT(Le, T, ray, active=active_next & si.is_valid()) \
+                      if prb_mode and self.track_time_derivatives else 0
+
             # ---------------------- Emitter sampling ----------------------
 
             # Should we continue tracing to reach one more vertex?
@@ -312,6 +335,16 @@ class PRBAcousticIntegrator(RBIntegrator):
                 mis_em = dr.select(ds.delta, 1, mis_weight(ds.pdf, bsdf_pdf_em))
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
 
+            # 
+            with dr.resume_grad(when=not primal):
+                τ_dir = dr.norm(ds.p - si.p)
+
+            # 
+            T_dir       = distance + τ + τ_dir
+
+            δHdLr_dirdT = compute_δH_dot_dLedT(Lr_dir, T_dir, ray, active=active_em) \
+                          if prb_mode and self.track_time_derivatives else 0
+
             # ------------------ Detached BSDF sampling -------------------
 
             bsdf_sample, bsdf_weight = bsdf.sample(bsdf_ctx, si,
@@ -319,57 +352,16 @@ class PRBAcousticIntegrator(RBIntegrator):
                                                    sampler.next_2d(),
                                                    active_next)
 
-            # ---- PRB-style tracking of time derivatives -----
-            # TODO (MW): Move to function of `prb_acoustic`?
+            # ------------------ put and accumulate current (differential) radiance -------------------
 
-            with dr.resume_grad(when=not primal):
-                # TODO: Microphone position is detached from τ
-                τ     = dr.select(first_vertex, si.t, dr.norm(si.p - prev_si.p))
-                τ_dir = dr.norm(ds.p - si.p)
-
-            # The surface interaction can be invalid, in which case we don't want it to have any influence
-            active_time     = active & si.is_valid()
-            active_time_dir = active_em
-
-            T     = dr.select(active_time,     distance + τ,         0.) # Full distance of current path
-            T_dir = dr.select(active_time_dir, distance + τ + τ_dir, 0.) # Full distance of direct emitter path
-
-            δHdTt_cur = mi.Float(0.)
+            δHdLdT_τ_cur = mi.Float(0.)
             if prb_mode and self.track_time_derivatives:
-                # This is executed in the PRB primal and adjoint passes
-                
-                with dr.resume_grad():
-                    dr.enable_grad(T, T_dir)
-
-                    Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0), block.size().y * T     / max_distance)
-                    Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0), block.size().y * T_dir / max_distance)
-
-                    δHLe     = dr.detach(Le)     * δH.read(pos=Le_pos)[0]
-                    δHLr_dir = dr.detach(Lr_dir) * δH.read(pos=Lr_dir_pos)[0]
-
-                    dr.forward_from(T)
-                    dr.forward_from(T_dir)
-
-                    δHdTLe     = dr.detach(dr.grad(δHLe))
-                    δHdTLr_dir = dr.detach(dr.grad(δHLr_dir))
-
-                    dr.disable_grad(T, T_dir)
-
                 if primal:
-                    # PRB primal
-                    δHdT = δHdT + δHdTLe + δHdTLr_dir
+                    δHdLdT = δHdLdT + δHdLedT + δHdLr_dirdT
                 elif adjoint:
-                    # PRB adjoint (backward)
                     with dr.resume_grad():
-                        # The surface interaction can be invalid, in which case we don't want it to have any influence
-                        τ     = dr.select(active_time,     τ,     0.)
-                        τ_dir = dr.select(active_time_dir, τ_dir, 0.)
-
-                        # The second term accounts for the emitter sample
-                        δHdTt_cur = τ * δHdT + τ_dir * δHdTLr_dir
-                    δHdT = δHdT - δHdTLe - δHdTLr_dir
-
-            # put and accumulate current (differential) radiance
+                        δHdLdT_τ_cur = τ * δHdLdT + τ_dir * δHdLr_dirdT
+                    δHdLdT = δHdLdT - δHdLedT - δHdLr_dirdT
 
             Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0), block.size().y * T     / max_distance)
             Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0), block.size().y * T_dir / max_distance)
@@ -386,8 +378,8 @@ class PRBAcousticIntegrator(RBIntegrator):
                 # FIXME (MW): Why are we ignoring active and active_em when writing to the block?
                 #       Should still work for samples that don't hit geometry (because distance will be inf)
                 #       but what about other reasons for becoming inactive?                             
-                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x,     1.0), active=active_time     & (Le.x     > 0.))
-                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=active_time_dir & (Lr_dir.x > 0.))
+                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x,     1.0), active=(Le.x     > 0.))
+                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.))
 
             # ---- Update loop variables based on current interaction -----
 
@@ -453,7 +445,7 @@ class PRBAcousticIntegrator(RBIntegrator):
 
                     # Propagate derivatives from/to 'Lo' based on 'mode'
                     if mode == dr.ADMode.Backward:
-                        dr.backward_from(δHLo + δHdTt_cur)
+                        dr.backward_from(δHLo + δHdLdT_τ_cur)
 
             depth[si.is_valid()] += 1
             active = active_next
@@ -461,7 +453,7 @@ class PRBAcousticIntegrator(RBIntegrator):
         return (
             δHL,                   # Radiance/differential radiance
             dr.neq(depth, 0),      # Ray validity flag for alpha blending
-            δHdT                   # State for the differential phase
+            δHdLdT                   # State for the differential phase
         )
 
     def render_backward(self: mi.SamplingIntegrator,
