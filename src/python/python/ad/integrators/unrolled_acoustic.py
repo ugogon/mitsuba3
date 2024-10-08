@@ -16,6 +16,8 @@ class UnrolledAcousticIntegrator(RBIntegrator):
         if self.max_time <= 0. or self.speed_of_sound <= 0.:
             raise Exception("\"max_time\" and \"speed_of_sound\" must be set to a value greater than zero!")
 
+        self.is_detached = props.get("is_detached", True)
+
         self.skip_direct = props.get("skip_direct", False)
 
         self.track_time_derivatives = props.get("track_time_derivatives", True)
@@ -32,6 +34,8 @@ class UnrolledAcousticIntegrator(RBIntegrator):
         self.rr_depth = props.get('rr_depth', self.max_depth)
         if self.rr_depth <= 0:
             raise Exception("\"rr_depth\" must be set to a value greater than zero!")
+        
+
 
     def render(self: mi.SamplingIntegrator,
                scene: mi.Scene,
@@ -210,6 +214,7 @@ class UnrolledAcousticIntegrator(RBIntegrator):
         prev_bsdf_pdf   = mi.Float(0.) if self.skip_direct else mi.Float(1.)
         prev_bsdf_delta = mi.Bool(True)
 
+        is_detached: bool = False
 
         # Specify the max. number of loop iterations (this can help avoid
         # costly synchronization when when wavefront-style loops are generated)
@@ -239,9 +244,13 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                 # Compute MIS weight for emitter sample from previous bounce
                 ds = mi.DirectionSample3f(scene, si=si, ref=prev_si)
 
+                si_pdf = scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta)
+                if self.is_detached:
+                    si_pdf = dr.detach(si_pdf)
+
                 mis = mis_weight(
                     prev_bsdf_pdf,
-                    dr.detach(scene.pdf_emitter_direction(prev_si, ds, ~prev_bsdf_delta))
+                    si_pdf
                 )
 
                 # Intensity of current emitter weighted by importance (def. by prev bsdf hits)
@@ -262,35 +271,37 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                 active_em = active_next & mi.has_flag(bsdf.flags(), mi.BSDFFlags.Smooth)
 
                 # If so, randomly sample an emitter without derivative tracking.
-                with dr.suspend_grad():
+                with dr.suspend_grad(when=not self.is_detached):
                     ds, em_weight = scene.sample_emitter_direction(si, sampler.next_2d(), True, active_em)
 
                 # Retrace the ray towards the emitter because ds is directly sampled
                 # from the emitter shape instead of tracing a ray against it.
-                # This contradicts the definition of "detached sampling of *directions*"
+                # This contradicts the definition of "sampling of *directions*"
                 si_em       = scene.ray_intersect(si.spawn_ray(ds.d), active=active_em)
                 ds_attached = mi.DirectionSample3f(scene, si_em, ref=si)
-                ds_attached.pdf, ds_attached.delta = (ds.pdf, ds.delta)
+                ds_attached.pdf, ds_attached.delta, ds_attached.uv, ds_attached.n = (ds.pdf, ds.delta, si_em.uv, si_em.n)
                 ds = ds_attached
 
-                # The sampled emitter direction and the pdf must be detached
-                # Recompute `em_weight = em_val / ds.pdf` with only `em_val` attached
-                dr.disable_grad(ds.d, ds.pdf)
-                em_val    = scene.eval_emitter_direction(si, ds, active_em)
-                em_weight = dr.replace_grad(em_weight, dr.select(dr.neq(ds.pdf, 0), em_val / ds.pdf, 0))
+                if self.is_detached:
+                    # The sampled emitter direction and the pdf must be detached
+                    # Recompute `em_weight = em_val / ds.pdf` with only `em_val` attached
+                    dr.disable_grad(ds.d, ds.pdf)
+                    em_val    = scene.eval_emitter_direction(si, ds, active_em)
+                    em_weight = dr.replace_grad(em_weight, dr.select(dr.neq(ds.pdf, 0), em_val / ds.pdf, 0))
 
                 active_em &= dr.neq(ds.pdf, 0.0)
 
                 # Evaluate BSDF * cos(theta) differentiably (and detach the bsdf pdf)
                 wo = si.to_local(ds.d)
                 bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
-                dr.disable_grad(bsdf_pdf_em)
+                if self.is_detached:
+                    dr.disable_grad(bsdf_pdf_em)
                 mis_em = dr.select(ds.delta, 1, mis_weight(ds.pdf, bsdf_pdf_em))
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
 
                 # Store (emission sample) intensity to the image block
                 τ_dir      = ds.dist
-                T_dir      = distance + τ + τ_dir
+                T_dir      = T + τ_dir
                 Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
                                         block.size().y * T_dir / max_distance)
                 block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=active_em & (Lr_dir.x > 0))
@@ -302,15 +313,21 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                                                     sampler.next_2d(),
                                                     active_next)
                 
-                # The sampled bsdf direction and the pdf must be detached
-                # Recompute `bsdf_weight = bsdf_val / bsdf_sample.pdf` with only `bsdf_val` attached
-                dr.disable_grad(bsdf_sample.wo, bsdf_sample.pdf)
-                bsdf_val    = bsdf.eval(bsdf_ctx, si, bsdf_sample.wo, active_next)
-                bsdf_weight = dr.replace_grad(bsdf_weight, dr.select(dr.neq(bsdf_sample.pdf, 0), bsdf_val / bsdf_sample.pdf, 0))
+                if self.is_detached:
+                    # The sampled bsdf direction and the pdf must be detached
+                    # Recompute `bsdf_weight = bsdf_val / bsdf_sample.pdf` with only `bsdf_val` attached
+                    dr.disable_grad(bsdf_sample.wo, bsdf_sample.pdf)
+                    bsdf_val    = bsdf.eval(bsdf_ctx, si, bsdf_sample.wo, active_next)
+                    bsdf_weight = dr.replace_grad(bsdf_weight, dr.select(dr.neq(bsdf_sample.pdf, 0), bsdf_val / bsdf_sample.pdf, 0))
 
                 # ---- Update loop variables based on current interaction -----
 
-                ray = si.spawn_ray(dr.detach(si.to_world(bsdf_sample.wo))) # The direction in *world space* is detached
+                wo_world = si.to_world(bsdf_sample.wo)
+                if self.is_detached:
+                    # The direction in *world space* is detached
+                    wo_world = dr.detach(wo_world)
+
+                ray = si.spawn_ray(wo_world) 
                 η *= bsdf_sample.eta
                 β *= bsdf_weight
 
