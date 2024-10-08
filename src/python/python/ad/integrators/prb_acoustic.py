@@ -322,16 +322,24 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             with dr.resume_grad(when=not primal):
                 if adjoint:
-                    # Given the detached emitter sample, *recompute* its
-                    # contribution with AD to enable light source optimization
-                    ds.d = dr.replace_grad(ds.d, dr.normalize(ds.p - si.p))
-                    em_val = scene.eval_emitter_direction(si, ds, active_em)
+                    # Retrace the ray towards the emitter because ds is directly sampled
+                    # from the emitter shape instead of tracing a ray against it.
+                    # This contradicts the definition of "sampling of *directions*"
+                    si_em       = scene.ray_intersect(si.spawn_ray(ds.d), active=active_em)
+                    ds_attached = mi.DirectionSample3f(scene, si_em, ref=si)
+                    ds_attached.pdf, ds_attached.delta, ds_attached.uv, ds_attached.n = (ds.pdf, ds.delta, si_em.uv, si_em.n)
+                    ds = ds_attached
+
+                    # The sampled emitter direction and the pdf must be detached
+                    # Recompute `em_weight = em_val / ds.pdf` with only `em_val` attached
+                    dr.disable_grad(ds.d, ds.pdf)
+                    em_val    = scene.eval_emitter_direction(si, ds, active_em)
                     em_weight = dr.replace_grad(em_weight, dr.select(dr.neq(ds.pdf, 0), em_val / ds.pdf, 0))
-                    dr.disable_grad(ds.d)
 
                 # Evaluate BSDF * cos(theta) differentiably
                 wo = si.to_local(ds.d)
                 bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
+                dr.disable_grad(bsdf_pdf_em)
                 mis_em = dr.select(ds.delta, 1, mis_weight(ds.pdf, bsdf_pdf_em))
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
 
