@@ -266,6 +266,14 @@ class PRBAcousticIntegrator(RBIntegrator):
             # The first path vertex requires some special handling (see below)
             first_vertex = dr.eq(depth, 0)            
 
+            with dr.resume_grad(when=not primal):
+                prev_si = prev_pi.compute_surface_interaction(prev_ray, ray_flags=mi.RayFlags.All)
+
+                # The previous intersection defines the origin of the ray, and it moves with the intersected shape
+                # This only captures part of the gradient since moving a single vertex moves the *full* path suffix,
+                # assuming sampling of directions (i.e., `prev_si` also affects all intersections after `si`)
+                ray.o = dr.replace_grad(ray.o, dr.select(~first_vertex, prev_si.p, 0))
+
             # Compute a surface interaction that tracks derivatives arising
             # from differentiable shape parameters (position, normals, etc.)
             # In primal mode, this is just an ordinary ray tracing operation.
@@ -282,8 +290,6 @@ class PRBAcousticIntegrator(RBIntegrator):
             if self.hide_emitters:
                 active_next &= ~(dr.eq(depth, 0) & ~si.is_valid())
                 
-            with dr.resume_grad(when=not primal):
-                prev_si = prev_pi.compute_surface_interaction(prev_ray, ray_flags=mi.RayFlags.All)
 
             # Compute MIS weight for emitter sample from previous bounce
             ds = mi.DirectionSample3f(scene, si=si, ref=prev_si)
