@@ -331,9 +331,9 @@ class PRBAcousticIntegrator(RBIntegrator):
                     # from the emitter shape instead of tracing a ray against it.
                     # This contradicts the definition of "sampling of *directions*"
                     si_em       = scene.ray_intersect(si.spawn_ray(ds_em.d), active=active_em)
-                    ds_attached = mi.DirectionSample3f(scene, si_em, ref=si)
-                    ds_attached.pdf, ds_attached.delta, ds_attached.uv, ds_attached.n = (ds_em.pdf, ds_em.delta, si_em.uv, si_em.n)
-                    ds_em = ds_attached
+                    ds_em_attached = mi.DirectionSample3f(scene, si_em, ref=si)
+                    ds_em_attached.pdf, ds_em_attached.delta, ds_em_attached.uv, ds_em_attached.n = (ds_em.pdf, ds_em.delta, si_em.uv, si_em.n)
+                    ds_em = ds_em_attached
 
                     # The sampled emitter direction and the pdf must be detached
                     # Recompute `em_weight = em_val / ds_em.pdf` with only `em_val` attached
