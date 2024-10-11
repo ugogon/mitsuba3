@@ -309,7 +309,6 @@ class PRBAcousticIntegrator(RBIntegrator):
 
             # 
             T       = distance + τ
-
             δHdLedT = compute_δH_dot_dLedT(Le, T, ray, active=active_next & si.is_valid()) \
                       if prb_mode and self.track_time_derivatives else 0
 
@@ -322,40 +321,38 @@ class PRBAcousticIntegrator(RBIntegrator):
             active_em = active_next & mi.has_flag(bsdf.flags(), mi.BSDFFlags.Smooth)
 
             # If so, randomly sample an emitter without derivative tracking.
-            ds, em_weight = scene.sample_emitter_direction(
+            ds_em, em_weight = scene.sample_emitter_direction(
                 si, sampler.next_2d(), True, active_em)
-            active_em &= dr.neq(ds.pdf, 0.0)
+            active_em &= dr.neq(ds_em.pdf, 0.0)
 
             with dr.resume_grad(when=not primal):
                 if adjoint:
-                    # Retrace the ray towards the emitter because ds is directly sampled
+                    # Retrace the ray towards the emitter because ds_em is directly sampled
                     # from the emitter shape instead of tracing a ray against it.
                     # This contradicts the definition of "sampling of *directions*"
-                    si_em       = scene.ray_intersect(si.spawn_ray(ds.d), active=active_em)
+                    si_em       = scene.ray_intersect(si.spawn_ray(ds_em.d), active=active_em)
                     ds_attached = mi.DirectionSample3f(scene, si_em, ref=si)
-                    ds_attached.pdf, ds_attached.delta, ds_attached.uv, ds_attached.n = (ds.pdf, ds.delta, si_em.uv, si_em.n)
-                    ds = ds_attached
+                    ds_attached.pdf, ds_attached.delta, ds_attached.uv, ds_attached.n = (ds_em.pdf, ds_em.delta, si_em.uv, si_em.n)
+                    ds_em = ds_attached
 
                     # The sampled emitter direction and the pdf must be detached
-                    # Recompute `em_weight = em_val / ds.pdf` with only `em_val` attached
-                    dr.disable_grad(ds.d, ds.pdf)
-                    em_val    = scene.eval_emitter_direction(si, ds, active_em)
-                    em_weight = dr.replace_grad(em_weight, dr.select(dr.neq(ds.pdf, 0), em_val / ds.pdf, 0))
+                    # Recompute `em_weight = em_val / ds_em.pdf` with only `em_val` attached
+                    dr.disable_grad(ds_em.d, ds_em.pdf)
+                    em_val    = scene.eval_emitter_direction(si, ds_em, active_em)
+                    em_weight = dr.replace_grad(em_weight, dr.select(dr.neq(ds_em.pdf, 0), em_val / ds_em.pdf, 0))
 
                 # Evaluate BSDF * cos(theta) differentiably
-                wo = si.to_local(ds.d)
+                wo = si.to_local(ds_em.d)
                 bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
                 dr.disable_grad(bsdf_pdf_em)
-                mis_em = dr.select(ds.delta, 1, mis_weight(ds.pdf, bsdf_pdf_em))
+                mis_em = dr.select(ds_em.delta, 1, mis_weight(ds_em.pdf, bsdf_pdf_em))
                 Lr_dir = β * mis_em * bsdf_value_em * em_weight
 
-            # 
             with dr.resume_grad(when=not primal):
-                τ_dir = dr.norm(ds.p - si.p)
+                τ_dir = dr.norm(ds_em.p - si.p)
 
             # 
             T_dir       = distance + τ + τ_dir
-
             δHdLr_dirdT = compute_δH_dot_dLedT(Lr_dir, T_dir, ray, active=active_em) \
                           if prb_mode and self.track_time_derivatives else 0
 
