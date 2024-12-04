@@ -184,7 +184,7 @@ public:
         return { value & active, dr::select(active, pdf, 0.f) };
     }
 
-    Frame3f frame(const SurfaceInteraction3f &si, Mask active) const {
+    Frame3f frame(const SurfaceInteraction3f &si, Mask active) const override {
         Normal3f n = dr::fmadd(m_normalmap->eval_3(si, active), 2, -1.f);
 
         Frame3f result;
