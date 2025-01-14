@@ -478,4 +478,4 @@ class ADThreePointAcousticIntegrator(RBIntegrator):
 
         return dr.grad(result_img)
     
-mi.register_integrator("ad_threepoint_acoustic", lambda props: ADThreePointAcousticIntegrator(props))
+mi.register_integrator("acoustic_ad_threepoint", lambda props: ADThreePointAcousticIntegrator(props))

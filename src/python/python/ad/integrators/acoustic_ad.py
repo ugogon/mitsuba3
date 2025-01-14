@@ -482,4 +482,4 @@ class UnrolledAcousticIntegrator(RBIntegrator):
 
 
 
-mi.register_integrator("unrolled_acoustic", lambda props: UnrolledAcousticIntegrator(props))
+mi.register_integrator("acoustic_ad", lambda props: UnrolledAcousticIntegrator(props))

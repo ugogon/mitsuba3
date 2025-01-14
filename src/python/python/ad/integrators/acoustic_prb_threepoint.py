@@ -599,4 +599,4 @@ class PRBThreePointAcousticIntegrator(RBIntegrator):
             # Run kernel representing side effects of the above
             dr.eval()
 
-mi.register_integrator("prb_threepoint_acoustic", lambda props: PRBThreePointAcousticIntegrator(props))
+mi.register_integrator("acoustic_prb_threepoint", lambda props: PRBThreePointAcousticIntegrator(props))

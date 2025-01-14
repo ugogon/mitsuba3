@@ -551,4 +551,4 @@ class PRBAcousticIntegrator(RBIntegrator):
             # Run kernel representing side effects of the above
             dr.eval()
 
-mi.register_integrator("prb_acoustic", lambda props: PRBAcousticIntegrator(props))
+mi.register_integrator("acoustic_prb", lambda props: PRBAcousticIntegrator(props))

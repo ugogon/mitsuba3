@@ -506,4 +506,4 @@ class UnrolledAcousticIntegrator(RBIntegrator):
 
 
 
-mi.register_integrator("unrolled_acoustic_reparam", lambda props: UnrolledAcousticIntegrator(props))
+mi.register_integrator("acoustic_ad_reparam", lambda props: UnrolledAcousticIntegrator(props))
