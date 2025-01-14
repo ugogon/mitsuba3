@@ -5,7 +5,7 @@ import drjit as dr
 import mitsuba as mi
 import gc
 
-from .prb_acoustic import PRBAcousticIntegrator
+from .acoustic_prb import PRBAcousticIntegrator
 from .common import RBIntegrator, _ReparamWrapper, mis_weight
 
 class PRBAcousticReparamIntegrator(PRBAcousticIntegrator):

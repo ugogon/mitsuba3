@@ -5,7 +5,7 @@ import drjit as dr
 import mitsuba as mi
 import gc
 
-from mitsuba.ad.integrators.common import RBIntegrator, _ReparamWrapper, mis_weight
+from .common import RBIntegrator, _ReparamWrapper, mis_weight
 
 class ADThreePointAcousticIntegrator(RBIntegrator):
     def __init__(self, props = mi.Properties()):
