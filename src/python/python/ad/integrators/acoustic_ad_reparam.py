@@ -270,7 +270,14 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                 )
 
                 # Intensity of current emitter weighted by importance (def. by prev bsdf hits)
-                Le = β * mis * ds.emitter.eval(si, active_next) * ray_det
+                Le = β * dr.detach(mis) * ds.emitter.eval(si, active_next) * ray_det
+
+                # Store (direct) intensity to the image block
+                T      = distance
+                Le_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                    block.size().y * T / max_distance)
+                block.put(pos=Le_pos, values=mi.Vector2f(Le.x, 1.0), active=active_next & (Le.x > 0))
+
 
                 # ---------------------- Emitter sampling ----------------------
 
@@ -282,16 +289,35 @@ class UnrolledAcousticIntegrator(RBIntegrator):
 
                 # If so, randomly sample an emitter without derivative tracking.
                 with dr.suspend_grad():
-                    ds, em_weight = scene.sample_emitter_direction(
-                        si, sampler.next_2d(), True, active_em)
+                    ds, em_weight = scene.sample_emitter_direction(si, sampler.next_2d(), True, active_em)
 
                 active_em &= dr.neq(ds.pdf, 0.0)
 
-                # Evaluate BSDF * cos(theta) differentiably
+                ray_em = si.spawn_ray(ds.d)
+                ray_em.d, ray_det_em = (ray_em.d, mi.Float(1)) if reparam is None else reparam(ray_em, depth)
+            
+
+                si_em       = scene.ray_intersect(ray_em, active=active_em)
+                ds_attached = mi.DirectionSample3f(scene, si_em, ref=si)
+                ds_attached.pdf, ds_attached.delta, ds_attached.uv, ds_attached.n = (ds.pdf, ds.delta, si_em.uv, si_em.n)
+                ds = ds_attached
+
+                dr.disable_grad(ds.d, ds.pdf)
+                em_val    = scene.eval_emitter_direction(si, ds, active_em)
+                em_weight = dr.replace_grad(em_weight, dr.select(dr.neq(ds.pdf, 0), em_val / ds.pdf, 0))
+
+                # Evaluate BSDF * cos(theta) differentiably (and detach the bsdf pdf)
                 wo = si.to_local(ds.d)
                 bsdf_value_em, bsdf_pdf_em = bsdf.eval_pdf(bsdf_ctx, si, wo, active_em)
                 mis_em = dr.select(ds.delta, 1, mis_weight(ds.pdf, bsdf_pdf_em))
-                Lr_dir = β * mis_em * bsdf_value_em * em_weight * ray_det
+                Lr_dir = β * dr.detach(mis_em) * bsdf_value_em * em_weight * ray_det * ray_det_em
+
+
+                τ_dir      = dr.norm(si_em.p - si.p)
+                T_dir      = T + τ_dir
+                Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
+                                        block.size().y * T_dir / max_distance)
+                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=active_em & (Lr_dir.x > 0))
 
                 # ------------------ Detached BSDF sampling -------------------
 
@@ -301,15 +327,14 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                                                            sampler.next_2d(),
                                                            active_next)
 
-                Le_pos     = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                        block.size().y * distance / max_distance)
-                Lr_dir_pos = mi.Point2f(ray.wavelengths.x - mi.Float(1.0),
-                                        block.size().y * (distance + dr.norm(ds.p - si.p)) / max_distance)
-                block.put(pos=Le_pos,     values=mi.Vector2f(Le.x,     1.0), active=(Le.x     > 0.))
-                block.put(pos=Lr_dir_pos, values=mi.Vector2f(Lr_dir.x, 1.0), active=(Lr_dir.x > 0.))
+                bsdf_val    = bsdf.eval(bsdf_ctx, si, bsdf_sample.wo, active_next)
+                bsdf_weight = dr.replace_grad(bsdf_weight, dr.select(dr.neq(bsdf_sample.pdf, 0), bsdf_val / bsdf_sample.pdf, 0))
+
 
                 # ---- Update loop variables based on current interaction -----
-                ray = si.spawn_ray(si.to_world(bsdf_sample.wo))
+                wo_world = dr.detach(si.to_world(bsdf_sample.wo))
+
+                ray = si.spawn_ray(wo_world)
                 ray.d, new_ray_det = (ray.d, mi.Float(1)) if reparam is None else reparam(ray, depth)
                 ray_det = ray_det * new_ray_det
 
