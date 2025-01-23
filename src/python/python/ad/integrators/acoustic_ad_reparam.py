@@ -327,8 +327,6 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                                                            sampler.next_2d(),
                                                            active_next)
 
-                bsdf_val    = bsdf.eval(bsdf_ctx, si, bsdf_sample.wo, active_next)
-                bsdf_weight = dr.replace_grad(bsdf_weight, dr.select(dr.neq(bsdf_sample.pdf, 0), bsdf_val / bsdf_sample.pdf, 0))
 
 
                 # ---- Update loop variables based on current interaction -----
@@ -337,6 +335,11 @@ class UnrolledAcousticIntegrator(RBIntegrator):
                 ray = si.spawn_ray(wo_world)
                 ray.d, new_ray_det = (ray.d, mi.Float(1)) if reparam is None else reparam(ray, depth)
                 ray_det = ray_det * new_ray_det
+
+                bsdf_sample.wo = ray.d
+                
+                bsdf_val    = bsdf.eval(bsdf_ctx, si, bsdf_sample.wo, active_next)
+                bsdf_weight = dr.replace_grad(bsdf_weight, dr.select(dr.neq(bsdf_sample.pdf, 0), bsdf_val / bsdf_sample.pdf, 0))
 
                 η *= bsdf_sample.eta
                 β *= bsdf_weight
